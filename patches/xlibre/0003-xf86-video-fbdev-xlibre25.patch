@@ -1,0 +1,65 @@
+diff --git a/src/fbdev.c b/src/fbdev.c
+index 3dfc0b2..6e3b9e7 100644
+--- a/src/fbdev.c
++++ b/src/fbdev.c
+@@ -15,14 +15,18 @@
+ #include "colormapst.h"
+ #include "xf86cmap.h"
+ #include "shadow.h"
++#ifdef XFreeXDGA
+ #include "dgaproc.h"
++#endif
+ 
+ /* for visuals */
+ #include "fb.h"
+ 
+ #include "fbdevhw.h"
+ 
++#ifdef XV
+ #include "xf86xv.h"
++#endif
+ 
+ #include <pciaccess.h>
+ 
+@@ -168,9 +172,11 @@ typedef struct {
+ 	CreateScreenResourcesProcPtr	CreateScreenResources;
+ 	void				(*PointerMoved)(ScrnInfoPtr pScrn, int x, int y);
+ 	EntityInfoPtr			pEnt;
++#ifdef XFreeXDGA
+ 	/* DGA info */
+ 	DGAModePtr			pDGAMode;
+ 	int				nDGAMode;
++#endif
+ 	OptionInfoPtr			Options;
+ } FBDevRec, *FBDevPtr;
+ 
+@@ -954,11 +960,13 @@ FBDevCloseScreen(ScreenPtr pScreen)
+ 	    free(fPtr->shadow);
+ 	    fPtr->shadow = NULL;
+ 	}
++#ifdef XFreeXDGA
+ 	if (fPtr->pDGAMode) {
+ 	  free(fPtr->pDGAMode);
+ 	  fPtr->pDGAMode = NULL;
+ 	  fPtr->nDGAMode = 0;
+ 	}
++#endif
+ 	pScrn->vtSema = FALSE;
+ 
+ 	pScreen->CreateScreenResources = fPtr->CreateScreenResources;
+@@ -1031,6 +1039,7 @@ FBDevPointerMoved(ScrnInfoPtr pScrn, int x, int y)
+ /***********************************************************************
+  * DGA stuff
+  ***********************************************************************/
++#ifdef XFreeXDGA
+ static Bool FBDevDGAOpenFramebuffer(ScrnInfoPtr pScrn, char **DeviceName,
+ 				   unsigned char **ApertureBase,
+ 				   int *ApertureSize, int *ApertureOffset,
+@@ -1154,6 +1163,7 @@ FBDevDGAAddModes(ScrnInfoPtr pScrn)
+ 	pMode = pMode->next;
+     } while (pMode != pScrn->modes);
+ }
++#endif
+ 
+ static Bool
+ FBDevDGAInit(ScrnInfoPtr pScrn, ScreenPtr pScreen)

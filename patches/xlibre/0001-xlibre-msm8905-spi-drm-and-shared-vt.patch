@@ -1,0 +1,1637 @@
+diff --git a/CODE_OF_CONDUCT.md b/CODE_OF_CONDUCT.md
+deleted file mode 100644
+index f1b1cb3..0000000
+--- a/CODE_OF_CONDUCT.md
++++ /dev/null
+@@ -1 +0,0 @@
+-404
+diff --git a/CODE_OVERVIEW.md b/CODE_OVERVIEW.md
+deleted file mode 100644
+index 6229dee..0000000
+--- a/CODE_OVERVIEW.md
++++ /dev/null
+@@ -1,314 +0,0 @@
+-# Overview of XLibre Server Source Code Structure
+-
+-The XLibre Server is a modular codebase that implements a X Window System (X11)
+-server. It's written in C, and supports a wide variety of platforms, hardware
+-configurations, and extensions.
+-
+-The codebase is organized into:
+- - OS abstractions,
+- - core components (device-independent and machine-independent code),
+- - extensions,
+- - hardware drivers and servers (device-dependant code), and
+- - supporting utilities.
+-
+-The Meson build system orchestrates compilation, handling dependencies,
+-conditional builds, and configuration options.
+-
+-## Key Principles of the Codebase
+-
+-**Modularity**: Code is split into libraries (e.g., `libxserver_*`) that are
+-linked into different server binaries (`Xorg`, `Xnest`, `Xquartz`, etc.).
+-
+-**Platform Independence**: Device Independent X (DIX) and Machine Independent
+-(MI) layers abstract hardware and OS differences.
+-
+-**Extensions**: Many features (e.g., `RandR`, `Composite`) are implemented as
+-loadable extensions. These can depend on one another, and many rely on
+-`Render` (render/) for drawing.
+-
+-**Build Flexibility**: Meson options allow enabling/disabling features, servers,
+-and extensions, with auto-detection for many.
+-
+-## Diagram of XLibre
+-
+-Below is a visual overview of how the components of the XLibre Server fit
+-together. This diagram should be read from the bottom up to understand how each
+-layer builds on those below.
+-
+-```
+-       +==========================================================+
+-       |                DDX (Hardware and Servers)                |
+-       +==========================================================+
+-       | Xorg (hw/xfree86/: modes, drivers, int10)                |
+-       +----------------------------+-----------------------------+
+-       | Xnest (hw/xnest/: nested)    | Xvfb (hw/vfb/: virtual)   |
+-       +------------------------------+---------------------------+
+-       | Xquartz (hw/xquartz/: macOS) | XWin (hw/xwin/: Windows)  |
+-       +----------------------------------------------------------+
+-                                    |
+-                                    |
+-   +=================================================================+
+-   |                    Extensions & Acceleration                    |
+-   +=================================================================+
+-   | Others: XFixes, Record, DBE, Sync (miext/sync), DRI3, etc.      |
+-   |         Xnamespace (Xext/namespace/: isolation)                 |
+-   +-----------------------+------------------+----------------------+
+-   | XInput (Xi/: devices) | XKB (xkb/: keys) | GLX (glx/: OpenGL)   |
+-   +-----------------------+----------------+-+----------------------+
+-   | Glamor (glamor/: OpenGL 2D accel.)     | EXA (exa/: 2D accel.)  |
+-   +--------------+------------+------------+------------------------+
+-   | Composite    | Damage     | Present    | RandR    | Xinerama    |
+-   | (effects)    | (tracking) | (vsync)    | (resize) | (monitors)  |
+-   +--------------+------------+------------+------------------------+
+-   | Render (render/: 2D primitives, glyphs, etc.)                   |
+-   | --> Core rendering, used by Composite, Glamor, etc.             |
+-   +-----------------------------------------------------------------+
+-                                    |
+-                                    |
+-   +=================================================================+
+-   |                        DIX (Core Layers)                        |
+-   +=================================================================+
+-   | DIX (dix/: dispatch, events, windows, resources)                |
+-   | --> Central hub for requests; extensions register here.         |
+-   +-----------------------------------------------------------------+
+-   | MI (mi/: generic draw, GC, sprites)   | FB (fb/: framebuffer)   |
+-   +---------------------------------------+-------------------------+
+-                                    |
+-                                    |
+-       +==========================================================+
+-       |                    OS Abstraction Layer                  |
+-       +==========================================================+
+-       | OS (os/: sockets, I/O, auth, etc.)                       |
+-       | --> Provides poll, log, connection, etc. for all above.  |
+-       +----------------------------------------------------------+
+-
+- +=======================================================================+
+- |      External Deps (Protocols/Libs: xproto, pixman, libdrm, etc.)     |
+- +=======================================================================+
+- | Protocols (xorgproto) | Rendering (pixman, etc.) | OS (libudev, etc.) |
+- +-----------------------------------------------------------------------+
+-```
+-
+-The flow of a typical request is:
+-
+- 1. Client request arrives (via OS layer)
+- 2. DIX dispatches request (Core op? Handle in DIX. No? Check extensions.)
+- 3. DIX/MI/FB/Extension handles request (including input, rendering, etc.)
+- 4. Output via DDX (hardware or simulated)
+-
+-## Top-Level Directory Layout
+-
+-The source tree is organized by functional areas. Below is an *introductory*
+-summary of each directory; this is a starting point, not a comprehensive
+-explanation.
+-
+-### Core
+-
+-- **config/**: Server configuration handling  
+-    Manages server configuration parsing and hotplugging, including input
+-    devices, monitors, and modules via files like `config.c` and `udev.c`. It
+-    interconnects with the input extensions (e.g., Xi/ for device detection)
+-    and OS layer (os/ for platform-specific I/O), relying on optional
+-    dependencies like libudev for dynamic device handling on Linux.
+-
+-- **dix/**: Device Independent X (DIX) - Core server logic  
+-    Orchestrates protocol dispatching, event handling, resource management,
+-    and window operations through files like `dispatch.c` and `main.c`. It
+-    serves as the central hub, interconnecting with all extensions (which
+-    register here via `extension.c`) and the MI layer (mi/ for generic
+-    implementations). Depends on protocols from xorgproto for request routing.
+-    Key components include: Request handlers, property system, colormap
+-    management, etc.
+-
+-- **hw/**: Device Dependant X (DDX) - Hardware-specific code and servers  
+-    Hardware-dependent drivers and server variants, including subdirectories
+-    like `xfree86/` (the main XLibre DDX), `kdrive/` (includes Xephyr),
+-    `vfb/`, `xnest/`, `xquartz/` (macOS), and `xwin/` (Windows). These link
+-    the various XLibre libraries/components (libxserver_*) into executables.
+-    
+-    NOTE: Drivers (e.g., modesetting, intel, amd) are currently in separate
+-    repositories and are loaded as modules. There is an ongoing discussion
+-    about moving these into the core source tree in the future.
+-
+-- **include/**: Global headers and configuration  
+-    Global headers and generated configs (like `dix-config.h`), defining core
+-    structures (e.g., `dixstruct.h`) and macros (e.g., `misc.h`) used across
+-    the codebase. This directory interconnects with nearly every component as
+-    an inclusion base, supporting platform independence by abstracting types
+-    and configs for DIX, MI, and extensions.
+-
+-- **fb/**: Framebuffer abstraction  
+-    A software framebuffer abstraction that implements generic rendering
+-    primitives (e.g., `fbpict.c` for pictures) as a fallback when hardware
+-    acceleration is unavailable. It interconnects closely with the MI layer
+-    (mi/ for drawing ops) and Render extension (render/ for accelerated
+-    paths). Depends on pixman for pixel manipulation.
+-
+-- **mi/**: Machine Independent (MI) - Generic implementations  
+-    The Machine Independent layer offers generic, non-hardware-specific
+-    implementations for drawing, window management, and graphics contexts
+-    via files like `miwindow.c` and `migc.c`. It acts as a fallback interconnect
+-    between DIX (for protocol handling) and FB (for rendering), extended via
+-    miext/ for specialized MI features like damage tracking.
+-
+-- **os/**: OS abstraction layer  
+-    The OS abstraction layer manages platform-agnostic I/O, sockets, signals,
+-    timers, and authentication (e.g., `connection.c` and `xdmcp.c` if enabled).
+-    It interconnects as the foundational bridge for all upper layers, supporting
+-    DIX events and extensions via polling (`ospoll.c`). Optionally depends on
+-    SHA1 providers for authentication and dbus for systemd integration.
+-
+-### Rendering Acceleration
+-
+-- **exa/**: EXA acceleration  
+-    EXA provides an older framework for 2D hardware acceleration, handling
+-    operations like rendering and glyphs through e.g., `exa_render.c`. It
+-    provides a fallback to Glamor. It interconnects with the Render extension
+-    for primitives. Primarily used in XLibre or Xephyr builds. Depends on
+-    pixman.
+-
+-- **glamor/**: Glamor acceleration  
+-    Enables OpenGL-based 2D acceleration as a modern replacement for EXA, with
+-    core logic in `glamor_render.c` for efficient drawing and XV support. It
+-    interconnects with the Render extension for primitives and GLX for OpenGL.
+-    Depends on epoxy and gbm for hardware access.
+-
+-### Extensions
+-
+-- **Xext/composite/**: Composite extension  
+-    Supports window redirection and compositing effects (e.g., transparency)
+-    via files like `compwindow.c`. It interconnects with Render (for drawing)
+-    and Damage (for efficiency).
+-
+-- **damageext/**: Damage extension  
+-    Tracks damaged screen regions for optimized redraws, implemented in
+-    `damageext.c`. It interconnects with miext/damage/ for MI-level tracking
+-    and Composite for effects. Depends on damageproto.
+-
+-- **dbe/**: Double Buffer Extension (DBE)  
+-    Provides double-buffering to minimize flicker in drawing operations, with
+-    `midbe.c` offering MI support. It interconnects as a simple extension to DIX
+-    for protocol handling, and optionally integrats with Render for buffered
+-    primitives.
+-
+-- **dri3/**: Direct Rendering Infrastructure 3 (DRI3) extension  
+-    Facilitates modern buffer sharing for direct rendering, handled in e.g.,
+-    `dri3_request.c`. It interconnects with GLX for OpenGL and hw/xfree86/dri/
+-    for hardware. Depends on libdrm and xshmfence.
+-
+-- **glx/**: OpenGL Extension to X (GLX)  
+-    Extends X for OpenGL applications, dispatching commands via `glxcmds.c`.
+-    It interconnects with Glamor/DRI for acceleration and Render for 2D ops.
+-
+-- **miext/**: MI Extensions  
+-    Contains Machine Independent extensions for specialized features like:
+-     - `damage` (MI damage tracking)
+-     - `rootless` (rootless windowing for Xquartz)
+-     - `shadow` (shadow framebuffer)
+-     - `sync` (fence synchronization)
+-    Interconnects as helpers for core MI (mi/) and extensions like Damage or
+-    Rootless (for Xquartz)
+-
+-- **present/**: Present extension  
+-    Manages vsync and buffer flipping for smooth graphics, via e.g.,
+-    `present_vblank.c`. It interconnects with DRI for hardware sync and RandR
+-    for screen ops. A modern alternative to Xv. Depends on presentproto.
+-
+-- **pseudoramiX/**: PseudoramiX  
+-    Emulates/Provides multi-monitor support for specific servers, implemented in
+-    `pseudoramiX.c`. It interconnects with Xwin or Xquartz servers for platform
+-    multi-head setups, integrating with RandR for compatibility in non-native
+-    environments.
+-
+-- **randr/**: Resize and Rotate (RandR) extension  
+-    RandR handles dynamic screen resizing, rotation, and multi-monitor configs
+-    via files like `rrtransform.c` and `rrcrtc.c`. It interconnects with
+-    hw/xfree86/modes/ for hardware modesetting and Render for drawing. Depends
+-    on randrproto.
+-
+-- **record/**: Record extension  
+-    Captures protocol streams for testing or debugging, via `record.c`. It
+-    interconnects with DIX for request interception. Depends on recordproto.
+-
+-- **render/**: Render extension  
+-    Accelerates 2D operations like glyphs and gradients via files like
+-    `render.c` and `picture.c`. As a central extension, it interconnects with
+-    Composite/Damage for effects, Glamor/EXA for acceleration, and FB for
+-    fallback. Depends on pixman.
+-
+-- **Xext/**: Core X extensions  
+-    Bundles core extensions like SHM (`shm.c`), Sync (`sync.c`), BigRequests
+-    (`bigreq.c`), VidMode (`vidmode.c`), Xinerama (`panoramiX.c`), and others.
+-    It interconnects broadly with DIX for base protocol enhancements and miext/
+-    for MI support. In XLibre, namespace/ adds client isolation/containers.
+-
+-- **xfixes/**: X Fixes extension  
+-    Protocol fixes and enhancements, like cursor confinement via `cursor.c`.
+-    It interconnects with XInput for input tweaks and Render for drawing.
+-    Depends on fixesproto.
+-
+-- **Xi/**: X Input extension  
+-    Manages advanced input devices, touch, and gestures, e.g. through
+-    `xiquerydevice.c`. It interconnects with config/ for hotplugging and
+-    XKB for keyboard integration.
+-
+-- **xkb/**: X Keyboard (XKB) extension  
+-    Oversees keyboard layouts, mappings, and actions, e.g. in `xkbActions.c`
+-    and `xkbEvents.c`. It interconnects with Xi/ for input devices and config/
+-    for rules loading. Depends on kbproto.
+-
+-### Documentation and Tests
+-
+-- **doc/**: Documentation
+-- **man/**: Manual pages for the server and tools
+-- **test/**: Unit/integration tests
+-
+-### Other Files
+-
+-- **meson.build** and **meson_options.txt** provide build process and
+-  configuration.
+-
+-- **include/dix-config.h** is generated as part of the build process.
+-
+-## Key Information for Working on the Code
+-
+-- **Entry Point**: Server starts in `dix/main.c` (Dispatch loop).
+-  Extensions load via `dix/extension.c`.
+-
+-- **Important Headers**: `include/dix-config.h` (config macros),
+-  `dix/dispatch.h` (request handlers), `os/osdep.h` (OS funcs).
+-
+-- **X11 Protocol**: Read the `xorgproto` docs. Core is in DIX,
+-  extensions add opcodes.
+-
+-- **Resources**: Read `doc/` output. Read Xorg docs at
+-  (freedesktop.org/wiki/Xorg)[freedesktop.org/wiki/Xorg]. Check GitHub issues
+-  and discussions.
+-
+-- **Modules**: Drivers and extensions load dynamically from
+-  `module_dir` (default: lib/xorg/modules).
+-
+-- **Debugging**: Use `-verbose` and `-logverbose` server flags for detailed
+-  output and logging. Enable libunwind for better backtraces. Enable
+-  AddressSanitizer in your build. Use tools like gdb, valgrind, perf, etc. 
+-  
+-  Use Xephyr for isolated testing in a nested X11 window.
+-  
+-  For debugging on real hardware, you need functional input devices
+-  (keyboard/mouse) to interact with the server or switch back to a text console
+-  (VT). Input is provided by separate driver modules (e.g., by
+-  [xf86-input-libinput](https://github.com/X11Libre/xf86-input-libinput) for
+-  modern devices via libinput), which need to be "installed" with your
+-  development build.
+-  
+-  For example, for `xf86-input-libinput` place `libinput_drv.so` in
+-  `your_prefix/lib64/xorg/modules/xlibre-25/input` (you can copy this from your
+-  main XLibre `usr/lib/` directory as long as it is ABI-compatible) and place
+-  `80-libinput.conf` in `your_prefix/share/X11/xorg.conf.d/`.
+-  
+-  For gdb debugging, it is highly recommended to use SSH from another machine or
+-  a serial terminal to avoid input lockup during breakpoints, which prevents
+-  local VT switching and could freeze your session.
+-
+-- **Contributing and Community Interaction**: See the `CONTRIBUTING.md` and
+-  `README.md` files for additional information.
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+deleted file mode 100644
+index 896faae..0000000
+--- a/CONTRIBUTING.md
++++ /dev/null
+@@ -1,18 +0,0 @@
+-# Contribution Guidelines
+-
+-1. All commits need a sign-off by the author (except for drafts)
+-   If additional reviewers gave their ack, a proper attribution
+-   header may be added.
+-
+-2. Commit messages should explain what's really done here, and their
+-   headlines need a short and precise subject. See history for examples.
+-
+-   Keep in mind that history is also a piece of documentation.
+-
+-3. Once a release is out, bugfixes should be submitted separately, against
+-   the affected release branch(es) as well as master (so multiple pull requests)
+-
+-4. If new functions or types are introduced, these should be documented
+-   in-code, so we can generate docs directly from the code :)
+-
+-5. Use pull request tags if you can - if we need some more, just ask.
+diff --git a/CoC.md b/CoC.md
+deleted file mode 100644
+index a85de19..0000000
+--- a/CoC.md
++++ /dev/null
+@@ -1 +0,0 @@
+--ENOENT
+diff --git a/HISTORY.md b/HISTORY.md
+deleted file mode 100644
+index 04d70f4..0000000
+--- a/HISTORY.md
++++ /dev/null
+@@ -1,229 +0,0 @@
+-# History of the XLibre fork
+-
+-This file contains a brief historical overview of the events surrounding the fork of Xorg into XLibre. It includes copies of the original unmodified documents, including references to their sources, so that readers can form their own opinions.
+-
+-The only two changes made were to reduce the original heading levels to improve readability and, where necessary, to add headings and short introductions to provide factual and chronological context. Spelling errors have been retained.
+-
+-
+-## Message of metux sent to the X.org mailing list
+-
+-This is the e-mail sent from Enrico Weigelt alias metux to the X.org mailing list hosted at freedesktop.org on June 6, 2025.
+-
+----
+-
+-### History repeats: Redhat censored me on freedesktop.org - Xlibre fork release coming in few days
+-
+-**Enrico Weigelt, metux IT consult** [info at metux.net](mailto:xorg-devel%40lists.x.org?Subject=Re%3A%20History%20repeats%3A%20Redhat%20censored%20me%20on%20freedesktop.org%20-%20Xlibre%20fork%0A%20release%20coming%20in%20few%20days&In-Reply-To=%3C1a9d25cc-6f02-4fe3-a206-3388c07ab81f%40metux.net%3E "History repeats: Redhat censored me on freedesktop.org - Xlibre fork release coming in few days")  
+-_Fri Jun 6 13:50:32 UTC 2025_
+-
+--   Next message (by thread): [Reminder: Registration & Call for Proposals open for XDC 2025](https://lists.x.org/archives/xorg-devel/2025-June/059397.html)
+--   **Messages sorted by:** [\[ date \]](https://lists.x.org/archives/xorg-devel/2025-June/date.html#59396) [\[ thread \]](https://lists.x.org/archives/xorg-devel/2025-June/thread.html#59396) [\[ subject \]](https://lists.x.org/archives/xorg-devel/2025-June/subject.html#59396) [\[ author \]](https://lists.x.org/archives/xorg-devel/2025-June/author.html#59396)
+-
+-Hello everybody,
+-
+-
+-this morning, Redhat employees banned me from the freedesktop.org gitlab
+-infrastructure - so censored all my work (not just on Xorg). They killed
+-my account, my git repos, my tickets in Xorg and closed all my merge
+-requests. And then making fun on social media about it.
+-
+-They fired the shot that's heared around the world.
+-
+-So much for freedesktop.org being "independent" and embracing freedom. 
+-Perhaps we should nominate them for the next Orwell award.
+-
+-It's now clear that freedesktop.org *is* the Redskirts, and they want
+-to kill X. By the way, the same corporation that tied to proprietarize a
+-lot of FOSS code, including the Linux kernel (and I've been one of those 
+-who warned them about terminating our license grants them).
+-
+-My most evil heresies probably were:
+-
+-a) forking Xorg and making *actual progress*<br>
+-b) talking to a journalist whose name must not be spoken in many other
+-    Redhat/IBM tax evasion outlets, like GNOME (they're also banning
+-    honorable long time contributors for just mentioning that name)<br>
+-c) inviting *anybody* to join me, without discrimination
+-
+-I don't know why, but it really looks they're quite scared by one guy
+-that's just trying to actually bring X11 forward. Hard to find he right
+-words for telling how honored I'm about that.
+-
+-This didn't actually surprise me, I knew this would be coming for about
+-a year now. Just didn't expect them to do such an extremely irrational
+-and dumb move. Now I'm taking great pleasure seeing the Streisand effect
+-kicking in (my inbox is exploding). Thanks for that great publicity.
+-
+-It's not the first time this happens in FOSS world, and it's not the
+-first time it's happening in X: remember what Xfree86 board did to
+-the honorable Keith Packard, back about two decades ago - what lead to
+-the birth of Xorg and the death of Xfree86. Same is happening again.
+-
+-History repeats itself.
+-
+-And now the Redskirts placed me onto the same stage as the great
+-honorable Keith Packard. WOOOOW.
+-
+-Just to be clear, I didn't want to fork, I tried my best to work
+-together with the Xorg team. But I knew for long time, this day would
+-come. Xorg has been captured by Redhat, in order to get rid of destroy
+-competition. The necessary consequence is a fork, more competition.
+-
+-For those interested in bringing X forward, feel free to join the
+-mailing list:
+-
+-https://www.freelists.org/list/xlibre
+-
+-Git repo:<br>
+-https://github.com/X11Libre/xserver.git
+-
+-I'm expecting to be banned from whole freedesktop.org mail system, too.
+-Excommunication unfortunately had become a common thing in the so-called
+-"free software" world - GNOME is just one of many examples. So if you
+-don't hear anymore from me on freedesktop.org lists, you know what's
+-going on.
+-
+-Join the xlibre mailing list to stay tuned.
+-
+-Together, we'll make X great again.
+-
+-
+-have fun,<br>
+---mtx
+-
+---<br>
+-\--- Enrico Weigelt, metux IT consult<br>
+-Free software and Linux embedded engineering<br>
+-[info at metux.net](https://lists.x.org/mailman/listinfo/xorg-devel) -- +49-151-27565287
+-
+----
+-
+-Source: [History repeats: Redhat censored me on freedesktop.org - Xlibre fork release coming in few days](https://lists.x.org/archives/xorg-devel/2025-June/059396.html)
+-
+-
+-## First version of the README of XLibre at Github
+-
+-The first version of the XLibre-specific [`README.md`](https://github.com/X11Libre/xserver/blob/master/README.md) file was created on June 12, 2025, and updated throughout the day. The version below reflects the status at the end of June 12, 2025.
+-
+----
+-
+-### XLibre Xserver
+-
+-Xlibre is a fork of the Xorg Xserver, with lots of code cleanups
+-and enhanced functionality.
+-
+-This fork was necessary since toxic elements within Xorg projects, moles
+-from BigTech, are boycotting any substantial work on Xorg, in order to
+-destroy the project, to eliminate competition of their own products.
+-Classic "embrace, extend, extinguish" tactics.
+-
+-Right after journalists first began covering the planned fork Xlibre,
+-on June 6th 2025, Redhat employees started a purge on the Xlibre founder's
+-GitLab account on freedesktop.org: deleted the git repo, tickets, merge
+-requests, etc, and so fired the shot that the whole world heard.
+-
+-This is an independent project, not at all affiliated with BigTech or any
+-of their subsidiaries or tax evasion tools, nor any political activists
+-groups, state actors, etc. It's explicitly free of any "DEI" or similar
+-discriminatory policies. Anybody who's treating others nicely is welcomed.
+-
+-It doesn't matter which country you're coming from, your political views,
+-your race, your sex, your age, your food menu, whether you wear boots or
+-heels, whether you're furry or fairy, Conan or McKay, comic character, a
+-small furry creature from Alpha Centauri, or just an boring average person.
+-Anybody who's interested in bringing X forward is welcome.
+-
+-Together we'll make X great again!
+-
+-#### Upgrade notice
+-
+-* Module ABIs have changed - drivers MUST be recompiled against this Xserver
+-  version, otherwise the Xserver can crash or fail to start up correctly.
+-
+-* If your console is locked up (no input possible, not even VT switch), then
+-  most likely the input driver couldn't be loaded due to a version mismatch.
+-  When unsure, it's best be prepared to ssh into your machine from another one
+-  or set a timer that's calling `chvt 1` after certain time, so you don't
+-  need a cold reboot.
+-
+-* Proprietary Nvidia drivers might break: they still haven't managed to do
+-  do even simple cleanups to catch up with Xorg master for about a year.
+-  All attempts to get into direct mail contact have failed. We're trying to
+-  work around this, but cannot give any guarantees.
+-
+-* Most Xorg drivers should run as-is (once recompiled!), with some exceptions.
+-  See `.gitlab-ci.yml` for the versions/branches built along with Xlibre.
+-
+-#### Driver repositories
+-
+-Since Redhat had deleted and banned all X11Libre repositories from freedesktop.org,
+-the driver repositories are now moved to github:
+-
+-| Driver | Git repository |
+-| --- | --- |
+-| xf86-input-elographics:   | https://github.com/X11Libre/xf86-input-elographics    |
+-| xf86-input-evdev:         | https://github.com/X11Libre/xf86-input-evdev          |
+-| xf86-input-joystick:      | https://github.com/X11Libre/xf86-input-joystick       |
+-| xf86-input-keyboard:      | https://github.com/X11Libre/xf86-input-keyboard       |
+-| xf86-input-libinput:      | https://github.com/X11Libre/xf86-input-libinput       |
+-| xf86-input-mouse:         | https://github.com/X11Libre/xf86-input-mouse          |
+-| xf86-input-synaptics:     | https://github.com/X11Libre/xf86-input-synaptics      |
+-| xf86-input-vmmouse:       | https://github.com/X11Libre/xf86-input-vmmouse        |
+-| xf86-video-amdgpu:        | https://github.com/X11Libre/xf86-video-amdgpu         |
+-| xf86-video-apm:           | https://github.com/X11Libre/xf86-video-apm            |
+-| xf86-video-ark:           | https://github.com/X11Libre/xf86-video-ark            |
+-| xf86-video-ast:           | https://github.com/X11Libre/xf86-video-ast            |
+-| xf86-video-ati:           | https://github.com/X11Libre/xf86-video-ati            |
+-| xf86-video-chips:         | https://github.com/X11Libre/xf86-video-chips          |
+-| xf86-video-cirrus:        | https://github.com/X11Libre/xf86-video-cirrus         |
+-| xf86-video-dummy:         | https://github.com/X11Libre/xf86-video-dummy          |
+-| xf86-video-fbdev:         | https://github.com/X11Libre/xf86-video-fbdev          |
+-| xf86-video-freedreno:     | https://github.com/X11Libre/xf86-video-freedreno      |
+-| xf86-video-geode:         | https://github.com/X11Libre/xf86-video-geode          |
+-| xf86-video-i128:          | https://github.com/X11Libre/xf86-video-i128           |
+-| xf86-video-i740:          | https://github.com/X11Libre/xf86-video-i740           |
+-| xf86-video-i740:          | https://github.com/X11Libre/xf86-video-i740           |
+-| xf86-video-intel:         | https://github.com/X11Libre/xf86-video-intel          |
+-| xf86-video-mach64:        | https://github.com/X11Libre/xf86-video-mach64         |
+-| xf86-video-mga:           | https://github.com/X11Libre/xf86-video-mga            |
+-| xf86-video-neomagic:      | https://github.com/X11Libre/xf86-video-neomagic       |
+-| xf86-video-nested:        | https://github.com/X11Libre/xf86-video-nested         |
+-| xf86-video-nouveau:       | https://github.com/X11Libre/xf86-video-nouveau        |
+-| xf86-video-nv:            | https://github.com/X11Libre/xf86-video-nv             |
+-| xf86-video-omap:          | https://github.com/X11Libre/xf86-video-omap           |
+-| xf86-video-qxl:           | https://github.com/X11Libre/xf86-video-qxl            |
+-| xf86-video-r128:          | https://github.com/X11Libre/xf86-video-r128           |
+-| xf86-video-rendition:     | https://github.com/X11Libre/xf86-video-rendition      |
+-| xf86-video-s3virge:       | https://github.com/X11Libre/xf86-video-s3virge        |
+-| xf86-video-savage:        | https://github.com/X11Libre/xf86-video-savage         |
+-| xf86-video-siliconmotion: | https://github.com/X11Libre/xf86-video-siliconmotion  |
+-| xf86-video-sis:           | https://github.com/X11Libre/xf86-video-sis            |
+-| xf86-video-sisusb:        | https://github.com/X11Libre/xf86-video-sisusb         |
+-| xf86-video-suncg14:       | https://github.com/X11Libre/xf86-video-suncg14        |
+-| xf86-video-suncg3:        | https://github.com/X11Libre/xf86-video-suncg3         |
+-| xf86-video-suncg6:        | https://github.com/X11Libre/xf86-video-suncg6         |
+-| xf86-video-sunffb:        | https://github.com/X11Libre/xf86-video-sunffb         |
+-| xf86-video-sunleo:        | https://github.com/X11Libre/xf86-video-sunleo         |
+-| xf86-video-suntcx:        | https://github.com/X11Libre/xf86-video-suntcx         |
+-| xf86-video-tdfx:          | https://github.com/X11Libre/xf86-video-tdfx           |
+-| xf86-video-trident:       | https://github.com/X11Libre/xf86-video-trident        |
+-| xf86-video-v4l:           | https://github.com/X11Libre/xf86-video-v4l            |
+-| xf86-video-vesa:          | https://github.com/X11Libre/xf86-video-vesa           |
+-| xf86-video-vmware:        | https://github.com/X11Libre/xf86-video-vmware         |
+-| xf86-video-voodoo:        | https://github.com/X11Libre/xf86-video-voodoo         |
+-| xf86-video-wsfb:          | https://github.com/X11Libre/xf86-video-wsfb           |
+-| xf86-video-xgi:           | https://github.com/X11Libre/xf86-video-xgi            |
+-
+-
+-#### Contact
+-
+-|  |  |
+-| --- | --- |
+-| Mailing list:                     | https://www.freelists.org/list/xlibre |
+-| Telegram channel:                 | https://t.me/x11dev |
+-| Matrix room (mirror of tg group): | https://matrix.to/#/#xlibre:matrix.org |
+-
+----
+-
+-Source: [xserver/README.md at fea8b78 - X11Libre/xserver - Github](https://github.com/X11Libre/xserver/blob/fea8b78358a169238a288952b77e15422837e8a5/README.md)<br>
+-Also see: [History for README.md - X11Libre/xserver - Github](https://github.com/X11Libre/xserver/commits/master/README.md)
+diff --git a/README.md b/README.md
+deleted file mode 100644
+index 1962ca9..0000000
+--- a/README.md
++++ /dev/null
+@@ -1,91 +0,0 @@
+-# XLibre Xserver
+-
+-[![GetMerged Scorecard](https://getmerged.abhishekco.de/api/badge/X11Libre/xserver)](https://getmerged.abhishekco.de/X11Libre/xserver)
+-
+-
+-The XLibre Xserver is the community-managed display server for the [X Window System Protocol Version 11 (Wikipedia)](https://en.wikipedia.org/wiki/X_Window_System_core_protocol), in short, X11.
+-
+-<p>
+-    <figure><a href="https://github.com/orgs/X11Libre/discussions/504#discussioncomment-17195498"><img src="https://github.com/X11Libre/website/blob/eb05723185647561390dade472edea5938333113/build/img/xlibre-one-year.jpg" alt="1 year of XLibre screenshot"></a><figcaption>One Year of XLibre. See more <a href="https://github.com/orgs/X11Libre/discussions/211">liberated screens here</a>.</figcaption>
+-    </figure>
+-</p>
+-
+-## Selected Features
+-
+-* All the good things from [X.Org Server](https://en.wikipedia.org/wiki/X.Org_Server), including its unreleased features
+-* [TearFree modesetting](https://github.com/X11Libre/xserver/commit/0dacee6c5149b63a563e9bed63502da2e9f1ac1f) by default and optionally [atomic modesetting](https://github.com/X11Libre/xserver/commit/461411c798c263f70daa96f7136614dfefda6adc)
+-* Support for the Nvidia drivers 340, 390, 470, 570, and newer
+-* [Xnamespace extension](https://github.com/X11Libre/xserver/blob/master/doc/Xnamespace.md) for separating X clients
+-* Support for seat management via [seatd](https://sr.ht/~kennylevinsen/seatd) besides [systemd-logind](https://www.freedesktop.org/software/systemd/man/latest/systemd-logind.service.html)
+-* [Xfbdev](https://github.com/X11Libre/xserver/tree/master/hw/kdrive), the generic framebuffer Xserver for Linux
+-* CI builds for several BSDs, Linux, MacOS, and Microsoft Windows
+-* Active community, cleanups, fixes, and development based on merit
+-
+-To learn more about the features and mission of XLibre, please [visit our homepage](https://xlibre.net).
+-
+-
+-## Switching to XLibre
+-
+-The easiest way to install and run XLibre is to use your distribution's provided packages. Please see the [Are We XLibre Yet? - (X11Libre/xserver Wiki)](https://github.com/X11Libre/xserver/wiki/Are-We-XLibre-Yet%3F) page for a list of the available options. If there is no option, then go on with building and installing XLibre from source.
+-
+-
+-### Building XLibre
+-
+-After cloning the [Xserver repository](https://github.com/X11Libre/xserver.git) or unpacking the sources and installing the dependencies, change into the source directory and run the [Meson](https://mesonbuild.com) build tool:
+-
+-```shell
+-cd "<source dir of xserver>"
+-meson setup <prefix> build <meson_options>
+-ninja -C build install
+-```
+-
+-You may specify the install `<prefix>` with, for example, `--prefix="$(pwd)/image"` and add build time [`<meson_options>`](https://github.com/X11Libre/xserver/blob/master/meson_options.txt) like so: `-Dxnest=false`. You may also want to build and install some graphics and input drivers. Please refer to the [Building XLibre (X11Libre/xserver Wiki)](https://github.com/X11Libre/xserver/wiki/Building-XLibre) page for more details.
+-
+-
+-### Configuring XLibre
+-
+-Until XLibre releases its own, you can find a detailed description of the configuration on the [Configuration - Xorg (ArchWiki)](https://wiki.archlinux.org/title/Xorg#Configuration) page. If you have built and installed XLibre yourself, then change into the `<prefix>` directory with `cd <prefix>` and create a directory `etc/X11` with a file `xorg.conf` and adjust it accordingly.
+-
+-Starting with version 25.0.0.16, the proprietary Nvidia driver is autodetected and handled internally without any special configuration. Please see the [Compatibility of XLibre (X11Libre/xserver Wiki)](https://github.com/X11Libre/xserver/wiki/Compatibility-of-XLibre) page for [more details on the Nvidia driver](https://github.com/X11Libre/xserver/wiki/Compatibility-of-XLibre#nvidia-proprietary-driver) and compatibility in general.
+-
+-
+-### Running XLibre
+-
+-If you installed XLibre using your distribution's provided packages, then the Xserver is usually started by [init (Wikipedia)](https://en.wikipedia.org/wiki/Init) on system start. On other systems it should be possible to manually start XLibre with user permissions by invoking `startx`. Please refer to [`man startx`](https://linux.die.net/man/1/startx) for how to use it.
+-
+-If you have built and installed XLibre yourself, then you may want to shutdown other Xservers, change into the `<prefix>` directory, and create a simple `testx.sh` file with the following contents:
+-
+-```shell
+-#!/bin/sh
+-./bin/X :1 vt8 -logfile /dev/stdout &
+-_pid=$!
+-sleep 10 && kill $_pid
+-```
+-
+-You can adjust the `:1 vt8` and other options in the `testx.sh` file as detailed in [`man Xorg`](https://linux.die.net/man/1/xorg). Make the `testx.sh` executable and run it:
+-
+-```shell
+-chmod 0770 testx.sh
+-./testx.sh
+-```
+-
+-This should give you 10 glorious seconds of a black and beautiful and empty screen. Afterwards the Xserver complains about being killed, but there should be no other critical errors for a "test passed." For more details, please see [Building XLibre (X11Libre/xserver Wiki)](https://github.com/X11Libre/xserver/wiki/Building-XLibre).
+-
+-If you are using seatd for rootless operation instead of (e)logind, create the following file named `.xserverrc` in your home directory:
+-```shell
+-#!/bin/sh
+-exec X -keeptty "$@"
+-```
+-Then, run `chmod +x ~/.xserverrc`.
+-
+-
+-## I want to help!
+-
+-That's great; there's enough to do for everyone. You may consider [one](https://github.com/orgs/X11Libre/discussions/categories/1-new-ideas) of the [many](https://github.com/orgs/X11Libre/discussions/categories/2-rfcs-of-the-core-team) [ideas](https://github.com/orgs/X11Libre/discussions/categories/3-ideas-soon-to-be-addressed) and [feature requests](https://github.com/X11Libre/xserver/issues?q=is%3Aissue%20state%3Aopen%20label%3Aenhancement) out there. To help in testing, you may consider becoming an [XLibre Test Driver](https://github.com/X11Libre/xserver/wiki/XLibre-Test-Drivers). Please also have a look at the [good first](https://github.com/X11Libre/xserver/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22good%20first%20issue%22) and [help wanted](https://github.com/X11Libre/xserver/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22) issues and the [Liberated Screens](https://github.com/orgs/X11Libre/discussions/211).
+-
+-If you want to work on anything, just let us know. If you have any questions, [just ask](https://github.com/orgs/X11Libre/discussions/categories/q-a). Thank you!
+-
+-
+-## Contact
+-
+-[XLibre Discussions at GitHub](https://github.com/orgs/X11Libre/discussions) | [XLibre mailing list at FreeLists](https://www.freelists.org/list/xlibre) | [@x11dev channel at Telegram](https://t.me/x11dev) | [#xlibredev space at Matrix](https://matrix.to/#/#xlibredev:matrix.org) | [XLibre security contact at GitHub](https://github.com/X11Libre/xserver/security/policy)
+diff --git a/Xext/xfixes/cursor.c b/Xext/xfixes/cursor.c
+index d017da0..a530caa 100644
+--- a/Xext/xfixes/cursor.c
++++ b/Xext/xfixes/cursor.c
+@@ -122,9 +122,9 @@ typedef struct _CursorHideCountRec {
+ #define Wrap(as,s,elt,func)	(((as)->elt = (s)->elt), (s)->elt = (func))
+ #define Unwrap(as,s,elt,backup)	(((backup) = (s)->elt), (s)->elt = (as)->elt)
+ 
+-/* The cursor doesn't show up until the first XDefineCursor() */
++/* The cursor is permanently disabled for keypad-only hardware */
+ Bool CursorVisible = FALSE;
+-Bool EnableCursor = TRUE;
++Bool EnableCursor = FALSE;
+ 
+ static CursorPtr
+ CursorForDevice(DeviceIntPtr pDev)
+diff --git a/doc/Xnamespace-protocol.md b/doc/Xnamespace-protocol.md
+deleted file mode 100644
+index 673da98..0000000
+--- a/doc/Xnamespace-protocol.md
++++ /dev/null
+@@ -1,440 +0,0 @@
+-Xnamespace protocol extension — design v0.1 (DRAFT)
+-===================================================
+-
+-This document specifies an X11 protocol extension for the Xnamespace
+-feature. Its purpose is to let an authorized management client
+-**dynamically manage namespaces at runtime** — the settings that today can
+-only be provisioned statically from the `namespace.conf` file at server
+-startup (see `doc/Xnamespace.md` and `Xext/namespace/config.c`).
+-
+-The expected user is a container/session manager: it creates a namespace
+-when a container starts and deletes it when the container finishes. Traffic
+-is very low, so requests are kept simple and synchronous (round-tripped)
+-rather than optimised for throughput — many X11 packets are needlessly
+-complex and this extension deliberately avoids that.
+-
+-The wire protocol mirrors the existing in-memory model (`struct Xnamespace`
+-in `Xext/namespace/namespace.h`) so the extension stays a thin, auditable
+-layer over data the server already maintains.
+-
+-Status: DESIGN DRAFT. Opcodes, encodings and the capability bit layout are
+-not yet frozen.
+-
+-
+-1. Goals and non-goals
+-----------------------
+-
+-Goals:
+-
+- * Enumerate namespaces and their settings.
+- * Create and delete namespaces at runtime.
+- * Query and modify per-namespace capability flags
+-   (`mouse-motion`, `shape`, `transparency`, `xinput`, `xkeyboard`,
+-   `superpower`).
+- * Add, list and remove authentication tokens that map clients into a
+-   namespace (the `auth` lines in the config file today).
+- * Auto-remove a namespace when its last client exits (transient
+-   namespaces for transient containers).
+-
+-Non-goals (decided, not just deferred):
+-
+- * **No persistence.** Xservers never persist state; runtime changes live
+-   only in memory. The config file remains the boot-time seed and is never
+-   rewritten. There is no `SaveConfig`/`ReloadConfig`.
+- * **No client reassignment.** A client's namespace is fixed at connect
+-   time by its auth token. There is no `AssignClient` request. A namespace
+-   is emptied by terminating its clients, not by moving them.
+- * **No namespace hierarchy yet.** A name delimiter is reserved for future
+-   nesting (section 3), but inheritance semantics are undefined and using
+-   the delimiter now is an error.
+- * **No events yet.** With a single synchronous manager there is no
+-   multi-manager consistency problem to solve. A `NamespaceNotify` event
+-   may be added later if a use case appears.
+-
+-
+-2. Security model (the load-bearing part)
+------------------------------------------
+-
+-The entire point of namespaces is isolation, and a management protocol is a
+-direct path to subverting it. So the access rule is simple and absolute:
+-
+-> **The whole extension is reachable only by clients in a `superPower`
+-> namespace** (today only the built-in `root`, plus any namespace
+-> explicitly granted `superpower`). To every other client the extension
+-> does not exist.
+-
+-This is enforced exactly where the existing code already enforces the same
+-boundary for `SECURITY`, `RECORD` and `XTEST` — the two Xace extension
+-hooks, both of which already gate on `subj->ns->superPower`:
+-
+- * `hook-ext-access.c` (fires on `QueryExtension`): non-superPower clients
+-   get `BadAccess`, so the extension is **invisible** — it reports as not
+-   present. A sandboxed client cannot even discover it exists.
+- * `hook-ext-dispatch.c` (fires on every request to the extension):
+-   non-superPower clients get `BadAccess`, so even a client that hard-codes
+-   the major opcode cannot invoke anything.
+-
+-Adding `Xnamespace-mgmt` to the blacklist in both hooks is the entire
+-access-control implementation. Consequences:
+-
+- * There is **no per-request privilege table**. Every request handler may
+-   assume its caller is superPower. One choke point to audit, not twelve.
+- * `QueryVersion` is reachable only by superPower clients too. That is
+-   fine: a client that cannot see the extension has nothing to negotiate,
+-   and "not present" is the honest answer for it.
+- * No client can grant itself capabilities it lacks, because a
+-   non-superPower client cannot reach any request, mutating or not.
+-
+-The built-in namespaces `root` and `anon` are **immutable** over the
+-protocol: their name, capabilities, attributes and token set are fixed at
+-boot. Any mutating request targeting them (delete, set-flags, add/remove
+-token) returns `BadAccess`. They are configured only via the config file.
+-
+-
+-3. Naming and identity
+------------------------
+-
+-Namespaces are identified **by name** — the same unique key the code
+-already uses (`XnsFindByName()`, `select_ns()`). Names are the only
+-namespace identifier on the wire; there are no protocol-level numeric IDs.
+-The server is free to keep an internal id or resource for its own
+-bookkeeping, but that is an implementation detail and never appears in a
+-request, reply or error. Given the low, synchronous traffic, string lookup
+-costs nothing and a single identifier is simpler to reason about.
+-
+-Name rules (violations return `BadName`):
+-
+- * Must be non-empty.
+- * Must be unique (duplicate on `CreateNamespace` → `BadName`).
+- * Must not contain the reserved nesting delimiter `'/'`. The delimiter is
+-   reserved now so that a future hierarchy (`parent/child`) can be added
+-   without a grammar break; using it today is rejected.
+- * Should be restricted to printable, non-whitespace characters so that any
+-   protocol-created name remains expressible in `namespace.conf` (the
+-   config parser splits on whitespace and treats `#` as a comment).
+-   Implementations reject other characters with `BadName`.
+-
+-`BadName` (core error 15) is reused as the single name-related error:
+-malformed, reserved-delimiter, duplicate-on-create, or no-such-namespace.
+-
+-Auth tokens, which have no natural human name, are referenced within a
+-namespace by a small server-assigned opaque handle (`CARD32`) returned at
+-creation. This is a per-namespace bookkeeping handle, not a global resource.
+-
+-
+-4. Capabilities and attributes
+--------------------------------
+-
+-Two `CARD32` words describe a namespace.
+-
+-**Capabilities** — access permissions (the `allow*` / `superPower` fields):
+-
+- | Bit     | Name                           |
+- | ------- | ------------------------------ |
+- | 1 << 0  | `XNS_CAPABILITY_MOUSE_MOTION`  |
+- | 1 << 1  | `XNS_CAPABILITY_SHAPE`         |
+- | 1 << 2  | `XNS_CAPABILITY_TRANSPARENCY`  |
+- | 1 << 3  | `XNS_CAPABILITY_INPUT`         |
+- | 1 << 4  | `XNS_CAPABILITY_KEYBOARD`      |
+- | 1 << 5  | `XNS_CAPABILITY_ADMIN`         |
+-
+-**Attributes** — lifecycle/status (new fields on `struct Xnamespace`):
+-
+- | Bit     | Name                  | meaning                                 |
+- | ------- | --------------------- | --------------------------------------- |
+- | 1 << 0  | `XNS_ATTR_IMMUTABLE`  | read-only; set by server for root/anon  |
+- | 1 << 1  | `XNS_ATTR_TRANSIENT`  | destroy namespace when last client exits|
+-
+-Unused bits in either word are reserved, must be 0, and yield `BadValue`.
+-New capabilities/attributes are added by allocating the next bit and
+-bumping the minor version.
+-
+-
+-5. Versioning
+--------------
+-
+-`QueryVersion` negotiates (major, minor). This document is major 1, minor 0.
+-The client sends the highest version it supports; the server replies with
+-the highest it supports that is not greater than the client's.
+-
+-
+-6. Requests
+------------
+-
+-Every request begins with the standard 4-byte extension header (major
+-opcode, 1-byte minor opcode, 16-bit length in 4-byte units). All requests
+-are 4-byte aligned. A namespace name is encoded as a single length-prefixed
+-STRING8 (`CARD16` length + bytes + zero padding to a 4-byte boundary) — one
+-uniform encoding, easy to parse.
+-
+-All mutating requests carry a reply so the manager round-trips and learns
+-success or failure synchronously, instead of relying on asynchronous error
+-delivery. Replies are deliberately minimal.
+-
+-Minor opcodes:
+-
+- | Opcode | Request              | Reply |
+- | ------ | -------------------- | ----- |
+- |   0    | `QueryVersion`       | yes   |
+- |   1    | `ListNamespaces`     | yes   |
+- |   2    | `CreateNamespace`    | yes (ack) |
+- |   3    | `DeleteNamespace`    | yes (ack) |
+- |   4    | `QueryNamespace`     | yes   |
+- |   5    | `SetNamespaceFlags`  | yes (ack) |
+- |   6    | `AddAuthToken`       | yes   |
+- |   7    | `RemoveAuthToken`    | yes (ack) |
+- |   8    | `ListAuthTokens`     | yes   |
+- |   9    | `GetClientNamespace` | yes   |
+-
+-### 6.0 QueryVersion
+-
+-```
+-  QueryVersion
+-    client-major-version: CARD16
+-    client-minor-version: CARD16
+-  =>
+-    major-version: CARD16
+-    minor-version: CARD16
+-```
+-
+-### 6.1 ListNamespaces
+-
+-```
+-  ListNamespaces
+-  =>
+-    namespaces: LISTofNAMESPACEINFO
+-```
+-
+-where each NAMESPACEINFO is a fixed header followed by the name:
+-
+-```
+-    capabilities: CARD32       (section 4)
+-    attributes:   CARD32       (section 4)
+-    refcnt:       CARD32        (clients currently assigned)
+-    num-tokens:   CARD32
+-    name:         STRING8       (length-prefixed, padded)
+-```
+-
+-### 6.2 CreateNamespace
+-
+-```
+-  CreateNamespace
+-    capabilities: CARD32       (initial caps)
+-    attributes:   CARD32       (XNS_ATTR_TRANSIENT honored; XNS_ATTR_IMMUTABLE
+-                                rejected with BadValue if set)
+-    name:         STRING8
+-  =>
+-    (empty ack)
+-```
+-
+-Errors: `BadName` (empty / illegal char / reserved `'/'` / duplicate),
+-`BadValue` (reserved capability or attribute bit set), `BadAlloc`.
+-
+-### 6.3 DeleteNamespace
+-
+-```
+-  DeleteNamespace
+-    onclients: CARD8           (0 = fail if any client present,
+-                                1 = terminate all clients, then delete)
+-    pad:       3 bytes
+-    name:      STRING8
+-  =>
+-    (empty ack)
+-```
+-
+- * Deleting a built-in namespace → `BadAccess`.
+- * `onclients == 0` and the namespace still has clients → `BadAccess`
+-   (busy). The manager must terminate them first or pass `onclients == 1`.
+- * `onclients == 1`: the server disconnects every client in the namespace
+-   (as if each had closed its connection), then frees the namespace and
+-   removes its auth tokens (calling `RemoveAuthorization()` for each).
+- * Any other `onclients` value → `BadValue`.
+-
+-### 6.4 QueryNamespace
+-
+-```
+-  QueryNamespace
+-    name: STRING8
+-  =>
+-    capabilities: CARD32
+-    attributes:   CARD32
+-    refcnt:       CARD32
+-    num-tokens:   CARD32
+-```
+-
+-`BadName` if no such namespace.
+-
+-### 6.5 SetNamespaceFlags
+-
+-Atomically updates the subset of capability bits selected by `value-mask`:
+-
+-```
+-  SetNamespaceFlags
+-    value-mask: CARD32         (which capability bits to apply)
+-    values:     CARD32         (new values for the masked bits)
+-    name:       STRING8
+-  =>
+-    capabilities: CARD32       (resulting capabilities)
+-```
+-
+-`new_caps = (old_caps & ~value-mask) | (values & value-mask)`. Targeting a
+-built-in namespace → `BadAccess`. A reserved bit in `value-mask` →
+-`BadValue`. `BadName` if no such namespace. (Attributes are set only at
+-creation in v0.1; there is no runtime attribute change.)
+-
+-### 6.6 AddAuthToken
+-
+-Runtime equivalent of an `auth` config line; internally calls
+-`AddAuthorization()` exactly as `config.c` does and records the token.
+-
+-```
+-  AddAuthToken
+-    name:        STRING8        (namespace name)
+-    auth-proto:  STRING8        (e.g. "MIT-MAGIC-COOKIE-1")
+-    auth-data:   STRING8        (raw key bytes, length-prefixed — NOT hex)
+-  =>
+-    token-handle: CARD32        (per-namespace handle for removal)
+-```
+-
+-The key is carried as raw bytes; the hex encoding in the config file
+-(`hex2bin()` in `config.c`) is a text-file affordance with no place in a
+-binary protocol. Targeting a built-in namespace → `BadAccess`. `BadName`
+-if no such namespace; `BadValue` if `auth-proto` is empty; `BadAlloc` on
+-failure.
+-
+-(Three length-prefixed STRING8s in a fixed order — the request stays
+-trivially parseable despite three variable-length fields.)
+-
+-### 6.7 RemoveAuthToken
+-
+-```
+-  RemoveAuthToken
+-    token-handle: CARD32
+-    name:         STRING8
+-  =>
+-    (empty ack)
+-```
+-
+-Calls `RemoveAuthorization()` and unlinks the token. Removing a token does
+-not disconnect clients already authenticated with it (standard X
+-authorization semantics); it only prevents future connections from using
+-it. `BadMatch` if the handle does not belong to the named namespace;
+-`BadAccess` for a built-in namespace; `BadName` if no such namespace.
+-
+-### 6.8 ListAuthTokens
+-
+-```
+-  ListAuthTokens
+-    name: STRING8
+-  =>
+-    tokens: LISTofAUTHTOKENINFO
+-```
+-
+-where AUTHTOKENINFO is:
+-
+-```
+-    token-handle: CARD32
+-    proto:        STRING8       (length-prefixed, padded)
+-```
+-
+-Secret key material is **never** returned — only the protocol name and the
+-handle. A compromised manager cannot exfiltrate cookies it did not create.
+-
+-### 6.9 GetClientNamespace
+-
+-Read-only introspection: which namespace a given client belongs to. Useful
+-for auditing a namespace's members before a `DeleteNamespace onclients=1`.
+-
+-```
+-  GetClientNamespace
+-    client-resource: CARD32     (a resource base; 0 = the calling client)
+-  =>
+-    is-server: BOOL
+-    pad:       3 bytes
+-    name:      STRING8          (the client's namespace name)
+-```
+-
+-This is the protocol view of `XnsClientPriv(client)->ns`.
+-
+-
+-7. Errors
+----------
+-
+-The extension defines no new error codes; it reuses core errors:
+-
+- * `BadAccess` — operation on an immutable built-in namespace; delete of a
+-   busy namespace without `onclients=1`. (Also the result of a
+-   non-superPower client reaching the extension, though the Xace hooks make
+-   that unreachable in practice — defence in depth.)
+- * `BadName`   — namespace name empty, illegal, reserved-delimiter,
+-   duplicate on create, or not found.
+- * `BadValue`  — reserved capability/attribute bit set; bad `onclients`
+-   value; empty auth protocol.
+- * `BadMatch`  — token handle does not belong to the named namespace.
+- * `BadAlloc`  — out of memory.
+-
+-
+-8. Mapping to the existing implementation
+------------------------------------------
+-
+-Registered like any other extension (`AddExtension`, cf.
+-`Xext/dpms/dpms.c:515`) from `NamespaceExtensionInit()` in
+-`Xext/namespace/namespace.c`, after `XnsLoadConfig()` succeeds — no point
+-exposing management when namespaces are disabled.
+-
+- | Protocol concept       | Existing code                                   |
+- | ---------------------- | ----------------------------------------------- |
+- | namespace record       | `struct Xnamespace` (`namespace.h`)             |
+- | capability bits        | `allow*` / `superPower` bool fields             |
+- | find by name           | `XnsFindByName()`                               |
+- | create namespace       | `select_ns()` logic, factored out of `config.c` |
+- | add token              | `AddAuthorization()` + `xorg_list_append`       |
+- | remove token           | `RemoveAuthorization()` + `xorg_list_del`       |
+- | client → namespace     | `XnsClientPriv()->ns`                           |
+- | refcount               | `struct Xnamespace.refcnt`                      |
+-
+-Required changes:
+-
+- 1. **Access gate.** Add `Xnamespace-mgmt` to the blacklist in both
+-    `hook-ext-access.c` (invisible to non-superPower) and
+-    `hook-ext-dispatch.c` (`BadAccess` on dispatch), alongside
+-    `SECURITY`/`RECORD`/`XTEST`.
+- 2. **Shared setters.** Factor the per-field parsing in `parseLine()` into
+-    helpers (`XnsCreateNamespace`, `XnsSetCaps`, `XnsAddToken`,
+-    `XnsRemoveToken`) so the config loader and the protocol handlers share
+-    one code path and cannot drift apart.
+- 3. **Removable tokens.** Add an opaque per-namespace `token-handle` to
+-    `struct auth_token` and support unlinking + `RemoveAuthorization()`
+-    (today tokens are only ever appended at boot).
+- 4. **New attribute fields.** `Bool builtin` already exists; add
+-    `Bool autoRemove`. Set `builtin` for `root`/`anon`.
+- 5. **Auto-remove.** Centralise in `XnamespaceAssignClient()`: after the
+-    `priv->ns->refcnt--` path, if the namespace is non-builtin, has
+-    `autoRemove` set, and refcnt reached 0, destroy it (free tokens via
+-    `RemoveAuthorization()`, unlink from `ns_list`, free). This is reached
+-    naturally from `hookClientDestroy()`, which already calls
+-    `XnamespaceAssignClient(subj, NULL)`. `root`/`anon` are safe because
+-    they are builtin and start at `refcnt = 1`.
+- 6. **Client termination on delete.** For `DeleteNamespace onclients=1`,
+-    walk clients whose `XnsClientPriv()->ns` matches and close them
+-    (`CloseDownClient`), then free the namespace.
+- 7. **Dispatch.** A `ProcXnsDispatch` / `SProcXnsDispatch` pair with the
+-    usual byte-swapped variants for each request.
+-
+-Serialization: everything runs in the single-threaded dispatch loop, so no
+-locking is needed. Refcount and list mutations are safe as they happen only
+-from request handlers and the existing callbacks.
+-
+-
+-9. Remaining minor questions
+-----------------------------
+-
+- 1. **Reserved name charset.** `'/'` is reserved for nesting. Confirm the
+-    full allowed charset (proposal: printable ASCII excluding whitespace,
+-    `#`, and `/`) so protocol-created names round-trip through the config
+-    grammar.
+- 2. **Auto-remove vs. explicit delete race.** If a transient namespace
+-    auto-removes just before a manager issues `DeleteNamespace`, the delete
+-    sees no such name and returns `BadName`. Is that acceptable (treat as
+-    "already gone, success") or should auto-removed names linger briefly?
+-    Proposal: `BadName` is fine; the namespace is gone either way.
+diff --git a/doc/Xnamespace.md b/doc/Xnamespace.md
+deleted file mode 100644
+index ce1aecd..0000000
+--- a/doc/Xnamespace.md
++++ /dev/null
+@@ -1,26 +0,0 @@
+-Xnamespace extension v1.0
+-=========================
+-
+-This extension separates clients into several namespaces (a bit similar to
+-Linux's kernel namespaces), which are isolated from each other. For example,
+-namespaces have their own selections and clients cannot directly interact
+-(send messages) or access other client's resources across namespace borders.
+-
+-An exception is the `root` namespace, which completely is unrestricted.
+-
+-Configuration
+--------------
+-
+-Namespaces are defined in a separate configuration file, which is loaded at
+-server startup (no dynamic provisioning in this version yet). The extension
+-is enabled when a namespace config is passed to the Xserver via the
+-`-namespace <fn>` flag.
+-
+-
+-See `Xext/namespace/ns.conf.example` for a configuration file example.
+-
+-Authentication / Namespace assignment
+--------------------------------------
+-
+-Assignment of clients into namespaces is done by the authentication token the
+-client is using to authenticate. Thus, token authentication needs to enabled.
+diff --git a/hw/xfree86/drivers/video/modesetting/driver.c b/hw/xfree86/drivers/video/modesetting/driver.c
+index 8d32bc8..c8dab70 100644
+--- a/hw/xfree86/drivers/video/modesetting/driver.c
++++ b/hw/xfree86/drivers/video/modesetting/driver.c
+@@ -794,6 +794,14 @@ dispatch_dirty(ScreenPtr pScreen)
+     uint32_t fb_id;
+     int ret, c, x, y ;
+ 
++    if (!ms->damage || !RegionNotEmpty(DamageRegion(ms->damage)))
++        return;
++
++#ifdef GLAMOR
++    if (ms->drmmode.glamor_gbm)
++        ms->glamor.finish(pScreen);
++#endif
++
+     for (c = 0; c < xf86_config->num_crtc; c++) {
+         xf86CrtcPtr crtc = xf86_config->crtc[c];
+         PixmapPtr pmap;
+diff --git a/hw/xfree86/drivers/video/modesetting/drmmode_bo.c b/hw/xfree86/drivers/video/modesetting/drmmode_bo.c
+index b39aa73..71c876e 100644
+--- a/hw/xfree86/drivers/video/modesetting/drmmode_bo.c
++++ b/hw/xfree86/drivers/video/modesetting/drmmode_bo.c
+@@ -251,6 +251,8 @@ gbm_create_cursor_bo(drmmode_ptr drmmode, Bool do_map,
+ 
+                                                 /* For older mesa */
+                                                  GBM_BO_USE_CURSOR | GBM_BO_USE_WRITE,
++                                                 GBM_BO_USE_SCANOUT | GBM_BO_USE_WRITE,
++                                                 GBM_BO_USE_WRITE,
+                                                };
+ 
+     /* Assume whatever bpp we have for the primary plane, we also have for the cursor plane */
+diff --git a/hw/xfree86/drivers/video/modesetting/drmmode_display.c b/hw/xfree86/drivers/video/modesetting/drmmode_display.c
+index e5f694c..98f1f7a 100644
+--- a/hw/xfree86/drivers/video/modesetting/drmmode_display.c
++++ b/hw/xfree86/drivers/video/modesetting/drmmode_display.c
+@@ -4856,16 +4856,11 @@ drmmode_create_initial_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
+         min_width  = MIN(width, min_width);
+         min_height = MIN(height, min_height);
+ 
+-        drmmode_crtc->cursor.bo = gbm_create_best_bo(drmmode, TRUE, width, height, DRMMODE_CURSOR_BO);
+-        if (!drmmode_crtc->cursor.bo) {
+-            gbm_bo_destroy(drmmode->front_bo);
+-            for (int j = 0; j < i; j++) {
+-                xf86CrtcPtr free_crtc = xf86_config->crtc[j];
+-                drmmode_crtc_private_ptr free_drmmode_crtc = free_crtc->driver_private;
+-                gbm_bo_destroy(free_drmmode_crtc->cursor.bo);
+-                free_drmmode_crtc->cursor.bo = NULL;
++        if (!drmmode->sw_cursor) {
++            drmmode_crtc->cursor.bo = gbm_create_best_bo(drmmode, TRUE, width, height, DRMMODE_CURSOR_BO);
++            if (!drmmode_crtc->cursor.bo) {
++                drmmode->sw_cursor = TRUE;
+             }
+-            return FALSE;
+         }
+     }
+ 
+@@ -4886,13 +4881,15 @@ drmmode_free_bos(ScrnInfoPtr pScrn, drmmode_ptr drmmode)
+         drmmode->fb_id = 0;
+     }
+ 
+-    gbm_bo_destroy(drmmode->front_bo);
++    if (drmmode->front_bo)
++        gbm_bo_destroy(drmmode->front_bo);
+ 
+     for (i = 0; i < xf86_config->num_crtc; i++) {
+         xf86CrtcPtr crtc = xf86_config->crtc[i];
+         drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+ 
+-        gbm_bo_destroy(drmmode_crtc->cursor.bo);
++        if (drmmode_crtc->cursor.bo)
++            gbm_bo_destroy(drmmode_crtc->cursor.bo);
+         drmmode_destroy_tearfree_shadow(crtc);
+     }
+ }
+diff --git a/hw/xfree86/os-support/linux/lnx_init.c b/hw/xfree86/os-support/linux/lnx_init.c
+index 6653dd9..e04b69c 100644
+--- a/hw/xfree86/os-support/linux/lnx_init.c
++++ b/hw/xfree86/os-support/linux/lnx_init.c
+@@ -114,35 +114,41 @@ linux_parse_vt_settings(int may_fail)
+         if (fd < 0) {
+             if (may_fail)
+                 return 0;
+-            FatalError("parse_vt_settings: Cannot open /dev/tty0 (%s), maybe missing for ex. '-seat seat0 -keeptty' parameters? (in case trying to run uid !=0 mode)\n",
+-                       strerror(errno));
+-        }
+-
+-        if (xf86Info.ShareVTs) {
+-            SYSCALL(ret = ioctl(fd, VT_GETSTATE, &vts));
+-            if (ret < 0) {
+-                if (may_fail)
+-                    return 0;
+-                FatalError("parse_vt_settings: Cannot find the current"
+-                           " VT (%s)\n", strerror(errno));
+-            }
+-            xf86Info.vtno = vts.v_active;
+-        }
+-        else {
+-            SYSCALL(ret = ioctl(fd, VT_OPENQRY, &xf86Info.vtno));
+-            if (ret < 0) {
+-                if (may_fail)
+-                    return 0;
+-                FatalError("parse_vt_settings: Cannot find a free VT: "
+-                           "%s\n", strerror(errno));
++            xf86Info.vtno = 1;
++            KeepTty = TRUE;
++        } else {
++            if (xf86Info.ShareVTs) {
++                SYSCALL(ret = ioctl(fd, VT_GETSTATE, &vts));
++                if (ret < 0) {
++                    if (may_fail) {
++                        close(fd);
++                        return 0;
++                    }
++                    FatalError("parse_vt_settings: Cannot find the current"
++                               " VT (%s)\n", strerror(errno));
++                }
++                xf86Info.vtno = vts.v_active;
+             }
+-            if (xf86Info.vtno == -1) {
+-                if (may_fail)
+-                    return 0;
+-                FatalError("parse_vt_settings: Cannot find a free VT\n");
++            else {
++                SYSCALL(ret = ioctl(fd, VT_OPENQRY, &xf86Info.vtno));
++                if (ret < 0) {
++                    if (may_fail) {
++                        close(fd);
++                        return 0;
++                    }
++                    FatalError("parse_vt_settings: Cannot find a free VT: "
++                               "%s\n", strerror(errno));
++                }
++                if (xf86Info.vtno == -1) {
++                    if (may_fail) {
++                        close(fd);
++                        return 0;
++                    }
++                    FatalError("parse_vt_settings: Cannot find a free VT\n");
++                }
+             }
++            close(fd);
+         }
+-        close(fd);
+     }
+ 
+     LogMessageVerb(from, 1, "using VT number %d\n\n", xf86Info.vtno);
+@@ -218,9 +224,14 @@ xf86OpenConsole(void)
+         if (seatd_libseat_controls_session())
+             return;
+ 
+-        if (xf86Info.consoleFd < 0)
+-            FatalError("xf86OpenConsole: Cannot open virtual console"
+-                       " %d (%s)\n", xf86Info.vtno, strerror(errno));
++        if (xf86Info.consoleFd < 0) {
++            LogMessageVerb(X_WARNING, 1,
++                           "xf86OpenConsole: Cannot open virtual console %d (%s), using /dev/null in shared VT mode\n",
++                           xf86Info.vtno, strerror(errno));
++            xf86Info.consoleFd = open("/dev/null", O_RDWR | O_NDELAY, 0);
++            xf86Info.ShareVTs = TRUE;
++            return;
++        }
+ 
+         /*
+          * Linux doesn't switch to an active vt after the last close of a vt,
+@@ -237,15 +248,23 @@ xf86OpenConsole(void)
+             struct termios nTty;
+ 
+             /*
+-             * now get the VT.  This _must_ succeed, or else fail completely.
++             * now get the VT.  If unprivileged without CAP_SYS_TTY_CONFIG,
++             * fall back to ShareVTs mode instead of aborting.
+              */
+-            if (!switch_to(xf86Info.vtno, "xf86OpenConsole"))
+-                FatalError("xf86OpenConsole: Switching VT failed\n");
++            if (!switch_to(xf86Info.vtno, "xf86OpenConsole")) {
++                LogMessageVerb(X_WARNING, 1,
++                               "xf86OpenConsole: VT switch not permitted, continuing in shared VT mode\n");
++                xf86Info.ShareVTs = TRUE;
++                return;
++            }
+ 
+             SYSCALL(ret = ioctl(xf86Info.consoleFd, VT_GETMODE, &VT));
+-            if (ret < 0)
+-                FatalError("xf86OpenConsole: VT_GETMODE failed %s\n",
+-                           strerror(errno));
++            if (ret < 0) {
++                LogMessageVerb(X_WARNING, 1, "xf86OpenConsole: VT_GETMODE failed %s\n",
++                               strerror(errno));
++                xf86Info.ShareVTs = TRUE;
++                return;
++            }
+ 
+             OsSignal(SIGUSR1, xf86VTRequest);
+ 
+@@ -254,15 +273,20 @@ xf86OpenConsole(void)
+             VT.acqsig = SIGUSR1;
+ 
+             SYSCALL(ret = ioctl(xf86Info.consoleFd, VT_SETMODE, &VT));
+-            if (ret < 0)
+-                FatalError
+-                    ("xf86OpenConsole: VT_SETMODE VT_PROCESS failed: %s\n",
+-                     strerror(errno));
++            if (ret < 0) {
++                LogMessageVerb(X_WARNING, 1,
++                               "xf86OpenConsole: VT_SETMODE VT_PROCESS failed: %s\n",
++                               strerror(errno));
++                xf86Info.ShareVTs = TRUE;
++                return;
++            }
+ 
+             SYSCALL(ret = ioctl(xf86Info.consoleFd, KDSETMODE, KD_GRAPHICS));
+-            if (ret < 0)
+-                FatalError("xf86OpenConsole: KDSETMODE KD_GRAPHICS failed %s\n",
+-                           strerror(errno));
++            if (ret < 0) {
++                LogMessageVerb(X_WARNING, 1,
++                               "xf86OpenConsole: KDSETMODE KD_GRAPHICS failed %s\n",
++                               strerror(errno));
++            }
+ 
+             tcgetattr(xf86Info.consoleFd, &tty_attr);
+             SYSCALL(ioctl(xf86Info.consoleFd, KDGKBMODE, &tty_mode));
+@@ -274,11 +298,11 @@ xf86OpenConsole(void)
+                 /* fine, just disable special keys */
+                 SYSCALL(ret = ioctl(xf86Info.consoleFd, KDSKBMODE, K_RAW));
+                 if (ret < 0)
+-                    FatalError("xf86OpenConsole: KDSKBMODE K_RAW failed %s\n",
+-                               strerror(errno));
+-
+-                /* ... and drain events, else the kernel gets angry */
+-                xf86SetConsoleHandler(drain_console, NULL);
++                    LogMessageVerb(X_WARNING, 1,
++                                   "xf86OpenConsole: KDSKBMODE K_RAW failed %s\n",
++                                   strerror(errno));
++                else
++                    xf86SetConsoleHandler(drain_console, NULL);
+             }
+ 
+             nTty = tty_attr;
+diff --git a/include/meson.build b/include/meson.build
+index bffd8fb..7863b9d 100644
+--- a/include/meson.build
++++ b/include/meson.build
+@@ -234,7 +234,7 @@ conf_data.set('DRI2', build_dri2 ? '1' : false)
+ conf_data.set('DRI3', build_dri3 ? '1' : false)
+ if build_glx
+     if build_glx_dri
+-        conf_data.set_quoted('DRI_DRIVER_PATH', dri_dep.get_variable(pkgconfig : 'dridriverdir'))
++        conf_data.set_quoted('DRI_DRIVER_PATH', '/usr/lib/dri')
+         conf_data.set('BUILD_GLX_DRI', 1)
+     endif
+ endif
+diff --git a/test/pyxtest/README.md b/test/pyxtest/README.md
+deleted file mode 100644
+index ae63f69..0000000
+--- a/test/pyxtest/README.md
++++ /dev/null
+@@ -1,194 +0,0 @@
+-# pyxtest - pytest-based X server test suite
+-
+-This is a pytest-based test suite that launches X servers and sends crafted
+-protocol requests to verify that security vulnerabilities and other bugs
+-are properly handled.
+-
+-It can be run against Xvfb, Xwayland, or Xorg but the latter typically
+-requires root and/or some setup outside the test suite. The test suite
+-uses both AddressSanitizer (ASAN) and valgrind for detecting
+-memory errors such as out-of-bounds reads/writes and use-after-free.
+-
+-
+-## Running tests
+-
+-### Via meson
+-The test suite (via Xvfb) is integrated into the meson tests and can be
+-run with normal meson commands.
+-
+-```sh
+-# run the python test suite
+-meson test --suite pyxtest
+-# run a set of tests
+-meson test pyxtest-test_randr.py
+-```
+-Consult the meson documentation for further details.
+-
+-### Directly with pytest
+-
+-For running against a custom path, point the test suite at the server binary to
+-test using environment variables or CLI options:
+-
+-```sh
+-# Using environment variable
+-XVFB_PATH=build/hw/vfb/Xvfb pytest test/pyxtest/ -v
+-
+-# Using --server-path
+-pytest test/pyxtest/ -v --server-path=build/hw/vfb/Xvfb
+-
+-# Using the system Xvfb (fallback if no path is set)
+-pytest test/pyxtest/ -v
+-```
+-
+-The normal pytest options work as expected (`-k` for test selection, etc.)
+-
+-Tests can be run against a manually-started server using the `--display`
+-option:
+-
+-```sh
+-./build/hw/vfb/Xvfb :2
+-pytest test/pyxtest --display :2
+-```
+-
+-### Running with AddressSanitizer (ASAN)
+-
+-ASAN is a compile-time instrumentation that detects memory errors such as
+-heap buffer overflows and use-after-free. To use ASAN, build the server with
+-sanitizer support:
+-
+-```sh
+-meson setup build-asan -Db_sanitize=address -Db_lundef=false
+-meson compile -C build-asan
+-```
+-
+-Then run the tests against the ASAN-built binary:
+-
+-```sh
+-XSERVER_ASAN=1 XVFB_PATH=build-asan/hw/vfb/Xvfb pytest test/pyxtest/ -v
+-```
+-
+-When using meson test, `XSERVER_ASAN` is set automatically if the build
+-was configured with `-Db_sanitize=address`.
+-
+-Tests marked with `@pytest.mark.asan` are skipped unless `XSERVER_ASAN=1`
+-is set. When ASAN detects an error, the server process is killed and the
+-ASAN error report is included in the test failure message.
+-
+-**Note:** ASAN and valgrind are mutually incompatible. When `XSERVER_ASAN=1`
+-is set, valgrind wrapping is automatically disabled even if `--valgrind` is
+-passed.
+-
+-### Running with valgrind
+-
+-The `--valgrind` flag runs **all** servers under valgrind:
+-
+-```sh
+-pytest test/pyxtest/ -v --valgrind
+-```
+-
+-Tests marked with `@pytest.mark.valgrind` automatically run their server
+-under valgrind even without the `--valgrind` flag. This is useful for
+-bugs that are only detectable via valgrind (e.g. use of uninitialised
+-values).
+-
+-### Testing multiple server types
+-
+-By default only `Xvfb` is tested. Use `--server-type` to test additional
+-servers. Tests using the `xserver` fixture are automatically run once per
+-server type:
+-
+-```sh
+-pytest test/pyxtest/ -v --server-type=xvfb --server-type=xwayland
+-```
+-
+-## CLI options
+-
+-| Option                         | Description                               |
+-|--------------------------------|-------------------------------------------|
+-| `--valgrind`                   | Run all X servers under valgrind memcheck |
+-| `--valgrind-suppressions=PATH` | Path to a valgrind suppressions file      |
+-| `--valgrind-log-dir=PATH`      | Persist a per-test valgrind XML report here (plus a `.txt` summary when there are findings), independent of pass/fail. Also settable via `VALGRIND_LOG_DIR`. |
+-| `--server-type=TYPE`           | Server type to test (`xvfb`, `xwayland`, `xorg`). Repeatable. Default: `xvfb` |
+-| `--server-path=PATH`           | Explicit path to the X server binary      |
+-| `--display=DISPLAY`            | Connect to an existing server instead of starting one. Accepts `:N` or `N`. Mutually exclusive with `--valgrind` and `--server-path` |
+-
+-## Environment variables
+-
+-The server binary is located by checking, in order:
+-
+-1. `--server-path` CLI option
+-2. `XVFB_PATH` / `XWAYLAND_PATH` / `XORG_PATH` environment variable
+-3. `XSERVER_BUILDDIR` environment variable (looks for `hw/vfb/Xvfb` etc.)
+-4. `build/` directory relative to the source root
+-5. System `PATH` (prints a warning)
+-
+-`VALGRIND_SUPPRESSIONS` can point to a suppressions file.
+-
+-`VALGRIND_LOG_DIR` is the environment-variable form of `--valgrind-log-dir`.
+-
+-`XSERVER_ASAN` set to `1` indicates the server binary was built with
+-AddressSanitizer. This is set automatically by meson when
+-`-Db_sanitize=address` is used. It can also be set manually.
+-
+-## Test markers
+-
+-| Marker                        | Effect                                                      |
+-|-------------------------------|-------------------------------------------------------------|
+-| `@pytest.mark.asan`           | Test requires ASAN (`XSERVER_ASAN=1` must be set            |
+-| `@pytest.mark.valgrind`       | Test requires valgrind (skipped if `XSERVER_ASAN` is set)   |
+-| `@pytest.mark.xwayland_only`  | Test is skipped unless `--server-type=xwayland`             |
+-| `@pytest.mark.xorg_only`      | Test is skipped unless `--server-type=xorg`                 |
+-| `@pytest.mark.swapped_client` | Test uses a byte-swapped (big-endian) client connection     |
+-
+-
+-## Writing a new test
+-
+-1. Create or edit a `test_*.py` file.
+-
+-2. Use the `xserver` and `xclient` or `xclient_swapped` fixtures to get a
+-   running server and connection:
+-
+-   ```python
+-   def test_something(self, xserver, xclient):
+-       # xclient is a RawX11Connection to xserver
+-       ...
+-       assert xserver.is_alive, "Server crashed"
+-   ```
+-
+-3. If the test needs an extension, create a fixture that handles
+-   negotiation:
+-
+-   ```python
+-   @pytest.fixture
+-   def render_client(xclient):
+-       ext = xclient.query_extension(Extension.RENDER)
+-       if not ext:
+-           pytest.skip("RENDER not available")
+-       # ... send version negotiation ...
+-       return xclient
+-   ```
+-
+-4. Build protocol requests using dataclasses from `proto/` and send them
+-   with `send_request()`. The byte order is handled automatically based
+-   on the connection type (native or swapped):
+-
+-   ```python
+-   from proto import xi
+-
+-   req = xi.XIChangeHierarchyRequest(
+-       opcode=opcode,
+-       num_changes=1,
+-       changes_data=change_data,
+-   )
+-   xclient.send_request(req)
+-   ```
+-
+-5. If a new extension module is needed, create `proto/myext.py` with
+-   constants and `@dataclass` request builders following the existing
+-   pattern.
+-
+-6. If the bug is only detectable via a memory sanitizer (OOB reads,
+-   use-after-free), mark the test with `@pytest.mark.asan`.  Use
+-   `@pytest.mark.valgrind` only for bugs that specifically require
+-   valgrind (e.g. use of uninitialised values that ASAN does not
+-   detect).

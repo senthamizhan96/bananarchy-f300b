@@ -1,0 +1,307 @@
+--- a/drivers/gpu/drm/msm/adreno/adreno_gpu.h
++++ b/drivers/gpu/drm/msm/adreno/adreno_gpu.h
+@@ -308,6 +308,11 @@
+ 	return adreno_is_revn(gpu, 225);
+ }
+ 
++static inline bool adreno_is_a304(const struct adreno_gpu *gpu)
++{
++	return adreno_is_revn(gpu, 304);
++}
++
+ static inline bool adreno_is_a305(const struct adreno_gpu *gpu)
+ {
+ 	return adreno_is_revn(gpu, 305);
+--- a/drivers/gpu/drm/msm/adreno/a3xx_catalog.c
++++ b/drivers/gpu/drm/msm/adreno/a3xx_catalog.c
+@@ -10,6 +10,17 @@
+ 
+ static const struct adreno_info a3xx_gpus[] = {
+ 	{
++		.chip_ids = ADRENO_CHIP_IDS(0x03000400),
++		.family = ADRENO_3XX,
++		.revn  = 304,
++		.fw = {
++			[ADRENO_FW_PM4] = "a300_pm4.fw",
++			[ADRENO_FW_PFP] = "a300_pfp.fw",
++		},
++		.gmem  = (SZ_64K + SZ_32K),
++		.inactive_period = DRM_MSM_INACTIVE_PERIOD,
++		.init  = a3xx_gpu_init,
++	}, {
+ 		.chip_ids = ADRENO_CHIP_IDS(0x03000512),
+ 		.family = ADRENO_3XX,
+ 		.fw = {
+--- a/drivers/gpu/drm/msm/adreno/a3xx_gpu.c
++++ b/drivers/gpu/drm/msm/adreno/a3xx_gpu.c
+@@ -118,7 +118,9 @@
+ 
+ 	DBG("%s", gpu->name);
+ 
+-	if (adreno_is_a305(adreno_gpu)) {
++	if (adreno_is_a304(adreno_gpu)) {
++		gpu_write(gpu, REG_A3XX_VBIF_ROUND_ROBIN_QOS_ARB, 0x0003);
++	} else if (adreno_is_a305(adreno_gpu)) {
+ 		/* Set up 16 deep read/write request queues: */
+ 		gpu_write(gpu, REG_A3XX_VBIF_IN_RD_LIM_CONF0, 0x10101010);
+ 		gpu_write(gpu, REG_A3XX_VBIF_IN_RD_LIM_CONF1, 0x10101010);
+@@ -241,7 +243,8 @@
+ 	gpu_write(gpu, REG_A3XX_UCHE_CACHE_MODE_CONTROL_REG, 0x00000001);
+ 
+ 	/* Enable Clock gating: */
+-	if (adreno_is_a305b(adreno_gpu) ||
++	if (adreno_is_a304(adreno_gpu) ||
++	    adreno_is_a305b(adreno_gpu) ||
+ 	    adreno_is_a306(adreno_gpu) ||
+ 	    adreno_is_a306a(adreno_gpu))
+ 		gpu_write(gpu, REG_A3XX_RBBM_CLOCK_CTL, 0xaaaaaaaa);
+@@ -340,7 +343,8 @@
+ 		gpu_write(gpu, REG_A3XX_CP_PFP_UCODE_DATA, ptr[i]);
+ 
+ 	/* CP ROQ queue sizes (bytes) - RB:16, ST:16, IB1:32, IB2:64 */
+-	if (adreno_is_a305(adreno_gpu) ||
++	if (adreno_is_a304(adreno_gpu) ||
++	    adreno_is_a305(adreno_gpu) ||
+ 	    adreno_is_a306(adreno_gpu) ||
+ 	    adreno_is_a306a(adreno_gpu) ||
+ 	    adreno_is_a320(adreno_gpu)) {
+@@ -365,6 +369,7 @@
+ 
+ static void a3xx_recover(struct msm_gpu *gpu)
+ {
++	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+ 	int i;
+ 
+ 	adreno_dump_info(gpu);
+@@ -378,9 +383,15 @@
+ 	if (hang_debug)
+ 		a3xx_dump(gpu);
+ 
+-	gpu_write(gpu, REG_A3XX_RBBM_SW_RESET_CMD, 1);
+-	gpu_read(gpu, REG_A3XX_RBBM_SW_RESET_CMD);
+-	gpu_write(gpu, REG_A3XX_RBBM_SW_RESET_CMD, 0);
++	/* Do not do soft reset for A304 because it cannot do SMMU programming
++	 * of any kind after a soft reset; rely on hard power-domain reset in
++	 * adreno_recover().
++	 */
++	if (!adreno_is_a304(adreno_gpu)) {
++		gpu_write(gpu, REG_A3XX_RBBM_SW_RESET_CMD, 1);
++		gpu_read(gpu, REG_A3XX_RBBM_SW_RESET_CMD);
++		gpu_write(gpu, REG_A3XX_RBBM_SW_RESET_CMD, 0);
++	}
+ 	adreno_recover(gpu);
+ }
+ 
+--- a/drivers/gpu/drm/msm/adreno/adreno_device.c
++++ b/drivers/gpu/drm/msm/adreno/adreno_device.c
+@@ -237,10 +237,12 @@
+ 	.unbind = adreno_unbind,
+ };
+ 
++static struct platform_device *msm_headless_pdev;
++
+ static void adreno_device_register_headless(void)
+ {
+-	/* on imx5, we don't have a top-level mdp/dpu node
+-	 * this creates a dummy node for the driver for that case
++	/* on imx5 and headless SPI-panel devices, we don't have a top-level
++	 * mdp/dpu node; this creates a dummy node for the driver for that case
+ 	 */
+ 	struct platform_device_info dummy_info = {
+ 		.parent = NULL,
+@@ -252,7 +254,34 @@
+ 		.size_data = 0,
+ 		.dma_mask = ~0,
+ 	};
+-	platform_device_register_full(&dummy_info);
++	if (!msm_headless_pdev) {
++		struct platform_device *pdev = platform_device_register_full(&dummy_info);
++		if (!IS_ERR(pdev))
++			msm_headless_pdev = pdev;
++	}
++}
++
++static bool adreno_has_display_node(void)
++{
++	static const char * const compat[] = {
++		"qcom,mdss",
++		"qcom,mdp4",
++		"qcom,mdp5",
++		"qcom,dpu1",
++	};
++	struct device_node *np;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(compat); i++) {
++		np = of_find_compatible_node(NULL, NULL, compat[i]);
++		if (np) {
++			bool avail = of_device_is_available(np);
++			of_node_put(np);
++			if (avail)
++				return true;
++		}
++	}
++	return false;
+ }
+ 
+ static int adreno_probe(struct platform_device *pdev)
+@@ -264,7 +293,8 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	if (of_device_is_compatible(pdev->dev.of_node, "amd,imageon"))
++	if (of_device_is_compatible(pdev->dev.of_node, "amd,imageon") ||
++	    !adreno_has_display_node())
+ 		adreno_device_register_headless();
+ 
+ 	return 0;
+@@ -272,6 +302,10 @@
+ 
+ static void adreno_remove(struct platform_device *pdev)
+ {
++	if (msm_headless_pdev) {
++		platform_device_unregister(msm_headless_pdev);
++		msm_headless_pdev = NULL;
++	}
+ 	component_del(&pdev->dev, &a3xx_ops);
+ }
+ 
+--- a/drivers/gpu/drm/msm/msm_drv.c
++++ b/drivers/gpu/drm/msm/msm_drv.c
+@@ -115,11 +115,27 @@
+ 	/*
+ 	 * a2xx comes with its own MMU
+ 	 * On other platforms IOMMU can be declared specified either for the
+-	 * MDP/DPU device or for its parent, MDSS device.
++	 * MDP/DPU device, its parent MDSS device, or the GPU device (headless).
+ 	 */
+-	return priv->is_a2xx ||
+-		device_iommu_mapped(dev->dev) ||
+-		device_iommu_mapped(dev->dev->parent);
++	if (priv->is_a2xx ||
++	    device_iommu_mapped(dev->dev) ||
++	    device_iommu_mapped(dev->dev->parent) ||
++	    (priv->gpu_pdev && device_iommu_mapped(&priv->gpu_pdev->dev)))
++		return true;
++
++	if (!dev->dev->of_node) {
++		struct device_node *np = of_find_compatible_node(NULL, NULL, "qcom,adreno");
++		if (!np)
++			np = of_find_compatible_node(NULL, NULL, "qcom,kgsl-3d0");
++		if (np) {
++			bool has_iommu = of_property_present(np, "iommus");
++			of_node_put(np);
++			if (has_iommu)
++				return true;
++		}
++	}
++
++	return false;
+ }
+ 
+ static int msm_init_vram(struct drm_device *dev)
+--- a/arch/arm/boot/dts/qcom/qcom-msm8909.dtsi
++++ b/arch/arm/boot/dts/qcom/qcom-msm8909.dtsi
+@@ -830,6 +830,76 @@
+ 			reg = <0x01937000 0x30000>;
+ 		};
+ 
++		gpu: gpu@1c00000 {
++			compatible = "qcom,adreno-304.0", "qcom,adreno";
++			reg = <0x01c00000 0x20000>;
++			reg-names = "kgsl_3d0_reg_memory";
++			interrupts = <GIC_SPI 33 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "kgsl_3d0_irq";
++			clock-names =
++				"core",
++				"iface",
++				"mem_iface",
++				"alt_mem_iface",
++				"gtcu_iface",
++				"gfx3d";
++			clocks =
++				<&gcc GCC_OXILI_GFX3D_CLK>,
++				<&gcc GCC_OXILI_AHB_CLK>,
++				<&gcc GCC_BIMC_GFX_CLK>,
++				<&gcc GCC_BIMC_GPU_CLK>,
++				<&gcc GCC_GTCU_AHB_CLK>,
++				<&gcc GFX3D_CLK_SRC>;
++			power-domains = <&gcc OXILI_GDSC>;
++			operating-points-v2 = <&gpu_opp_table>;
++			iommus = <&gpu_iommu 1>, <&gpu_iommu 2>;
++			#cooling-cells = <2>;
++
++			gpu_opp_table: opp-table {
++				compatible = "operating-points-v2";
++
++				opp-409600000 {
++					opp-hz = /bits/ 64 <409600000>;
++				};
++				opp-307200000 {
++					opp-hz = /bits/ 64 <307200000>;
++				};
++				opp-200000000 {
++					opp-hz = /bits/ 64 <200000000>;
++				};
++				opp-19200000 {
++					opp-hz = /bits/ 64 <19200000>;
++				};
++			};
++		};
++
++		gpu_iommu: iommu@1f08000 {
++			#address-cells = <1>;
++			#size-cells = <1>;
++			#iommu-cells = <1>;
++			compatible = "qcom,msm8909-iommu", "qcom,msm8916-iommu", "qcom,msm-iommu-v1";
++			ranges = <0 0x01f08000 0x10000>;
++			clocks = <&gcc GCC_SMMU_CFG_CLK>,
++				 <&gcc GCC_GFX_TCU_CLK>,
++				 <&gcc GCC_GFX_TBU_CLK>;
++			clock-names = "iface", "bus", "tbu";
++			qcom,iommu-secure-id = <18>;
++
++			/* GFX3D_USER */
++			iommu-ctx@1000 {
++				compatible = "qcom,msm-iommu-v1-ns";
++				reg = <0x1000 0x1000>;
++				interrupts = <GIC_SPI 241 IRQ_TYPE_LEVEL_HIGH>;
++			};
++
++			/* GFX3D_PRIV */
++			iommu-ctx@2000 {
++				compatible = "qcom,msm-iommu-v1-ns";
++				reg = <0x2000 0x1000>;
++				interrupts = <GIC_SPI 242 IRQ_TYPE_LEVEL_HIGH>;
++			};
++		};
++
+ 		spmi_bus: spmi@200f000 {
+ 			compatible = "qcom,spmi-pmic-arb";
+ 			reg = <0x0200f000 0x001000>,
+@@ -1524,11 +1594,23 @@
+ 
+ 			thermal-sensors = <&tsens 2>;
+ 
++			cooling-maps {
++				map0 {
++					trip = <&gpu_alert0>;
++					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
++				};
++			};
++
+ 			trips {
+ 				gpu_alert0: trip-point0 {
+-					temperature = <90000>;
++					temperature = <75000>;
++					hysteresis = <2000>;
++					type = "passive";
++				};
++				gpu_crit: gpu-crit {
++					temperature = <95000>;
+ 					hysteresis = <2000>;
+-					type = "hot";
++					type = "critical";
+ 				};
+ 			};
+ 		};

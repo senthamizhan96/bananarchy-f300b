@@ -1,0 +1,25 @@
+diff --git a/src/xf86libinput.c b/src/xf86libinput.c
+index 1aebca3..8d3691c 100644
+--- a/src/xf86libinput.c
++++ b/src/xf86libinput.c
+@@ -1727,12 +1727,19 @@ xf86libinput_handle_key(InputInfoPtr pInfo, struct libinput_event_keyboard *even
+ 	if ((driver_data->capabilities & CAP_KEYBOARD) == 0)
+ 		return;
+ 
+-	/* keycodes > 256 that have a historical mapping in xkeyboard-config */
++	/* keycodes > 256 that have a historical mapping in xkeyboard-config
++	 * plus Nokia MSM8909 keypad evdev keycodes > 247 mapped into X11 8-bit range */
+ 	switch (key) {
+ 	case KEY_TOUCHPAD_TOGGLE: key = KEY_F21; break;
+ 	case KEY_TOUCHPAD_ON:     key = KEY_F22; break;
+ 	case KEY_TOUCHPAD_OFF:    key = KEY_F23; break;
+ 	case KEY_MICMUTE:         key = KEY_F20; break;
++	case 696: /* KEY_KBD_LCD_MENU1 (Left Softkey) */  key = KEY_COMPOSE;    break;
++	case 697: /* KEY_KBD_LCD_MENU2 (Right Softkey) */ key = KEY_BACK;       break;
++	case 445: /* KEY_PICKUP_PHONE (Call button) */    key = KEY_PHONE;      break;
++	case 352: /* KEY_OK (Center D-pad OK) */          key = KEY_ENTER;      break;
++	case 522: /* KEY_NUMERIC_STAR (*) */              key = KEY_KPASTERISK; break;
++	case 523: /* KEY_NUMERIC_POUND (#) */             key = KEY_KPSLASH;    break;
+ 	}
+ 
+ 	key += XORG_KEYCODE_OFFSET;

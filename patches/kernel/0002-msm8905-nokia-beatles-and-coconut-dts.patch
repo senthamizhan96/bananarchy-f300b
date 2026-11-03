@@ -1,0 +1,44 @@
+--- a/devices/nokia-argon/qcom-msm8905-nokia-argon.dts	2026-10-18 12:03:41.241108254 +0300
++++ b/devices/nokia-beatles/qcom-msm8905-nokia-beatles.dts	2026-10-18 12:03:41.241443705 +0300
+@@ -4,8 +4,8 @@
+ 	#address-cells = <0x01>;
+ 	#size-cells = <0x01>;
+ 	interrupt-parent = <0x01>;
+-	model = "Nokia 8110 4G";
+-	compatible = "nokia,argon", "qcom,msm8905", "qcom,msm8909";
++	model = "Nokia 2720 Flip";
++	compatible = "nokia,beatles", "nokia,argon", "qcom,msm8905", "qcom,msm8909";
+ 	chassis-type = "handset";
+ 
+ 	aliases {
+@@ -1733,7 +1733,7 @@
+ 			status = "okay";
+ 
+ 			display@0 {
+-				compatible = "nokia,argon-gc9305-v2-panel", "panel-mipi-dbi-spi";
++				compatible = "nokia,beatles-gc9305-panel", "nokia,argon-gc9305-v2-panel", "panel-mipi-dbi-spi";
+ 				reg = <0x00>;
+ 				backlight = <0x6b>;
+ 				reset-gpios = <0x27 0x19 0x00>;
+--- a/devices/nokia-argon/qcom-msm8905-nokia-argon.dts	2026-10-18 12:03:41.241108254 +0300
++++ b/devices/nokia-tough/qcom-msm8905-nokia-coconut.dts	2026-10-18 12:03:41.241598417 +0300
+@@ -4,8 +4,8 @@
+ 	#address-cells = <0x01>;
+ 	#size-cells = <0x01>;
+ 	interrupt-parent = <0x01>;
+-	model = "Nokia 8110 4G";
+-	compatible = "nokia,argon", "qcom,msm8905", "qcom,msm8909";
++	model = "Nokia 800 Tough";
++	compatible = "nokia,coconut", "nokia,argon", "qcom,msm8905", "qcom,msm8909";
+ 	chassis-type = "handset";
+ 
+ 	aliases {
+@@ -1733,7 +1733,7 @@
+ 			status = "okay";
+ 
+ 			display@0 {
+-				compatible = "nokia,argon-gc9305-v2-panel", "panel-mipi-dbi-spi";
++				compatible = "nokia,coconut-gc9305-panel", "nokia,argon-gc9305-v2-panel", "panel-mipi-dbi-spi";
+ 				reg = <0x00>;
+ 				backlight = <0x6b>;
+ 				reset-gpios = <0x27 0x19 0x00>;

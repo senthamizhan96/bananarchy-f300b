@@ -1,0 +1,1127 @@
+diff --git a/src/t9-addon.conf b/src/t9-addon.conf
+index 2c571ed..fc4092a 100644
+--- a/src/t9-addon.conf
++++ b/src/t9-addon.conf
+@@ -5,4 +5,8 @@ Enabled=True
+ Library=t9
+ Type=SharedLibrary
+ OnDemand=False
++RegisterInputMethod=True
+ Configurable=False
++
++[Addon/Dependencies]
++0=core
+diff --git a/src/t9.cpp b/src/t9.cpp
+index f4a4b5a..1298345 100644
+--- a/src/t9.cpp
++++ b/src/t9.cpp
+@@ -5,11 +5,257 @@
+ #include <fcitx/inputpanel.h>
+ #include <fcitx/text.h>
+ 
+-#include <chrono>
++#include <cctype>
++#include <cstdint>
++#include <dlfcn.h>
++#include <string_view>
+ 
+-const std::map<int, std::string> T9Engine::keypadMap = {
+-    {1, ".,-!?/@:;1"}, {2, "abc2"},  {3, "def3"}, {4, "ghi4"},  {5, "jkl5"},
+-    {6, "mno6"},       {7, "pqrs7"}, {8, "tuv8"}, {9, "wxyz9"}, {10, " 0"}};
++#include <typeinfo>
++
++namespace {
++
++struct wl_proxy;
++struct wl_interface;
++
++using WlProxyGetVersionFn = uint32_t (*)(struct wl_proxy*);
++using WlProxyMarshalFlagsFn = struct wl_proxy* (*)(
++    struct wl_proxy*, uint32_t, const struct wl_interface*, uint32_t, uint32_t,
++    ...);
++
++void sendWaylandVkModifiers(fcitx::InputContext* ic, uint32_t modsDepressed) {
++  if (!ic || ic->frontendName() != std::string_view("wayland_v2")) {
++    return;
++  }
++  static void* wlHandle = dlopen("libwayland-client.so.0", RTLD_LAZY);
++  static auto getVer =
++      wlHandle ? reinterpret_cast<WlProxyGetVersionFn>(
++                     dlsym(wlHandle, "wl_proxy_get_version"))
++               : nullptr;
++  static auto marshalFlags =
++      wlHandle ? reinterpret_cast<WlProxyMarshalFlagsFn>(
++                     dlsym(wlHandle, "wl_proxy_marshal_flags"))
++               : nullptr;
++  if (!getVer || !marshalFlags) {
++    return;
++  }
++  auto* raw = reinterpret_cast<uint8_t*>(ic);
++  std::string_view typeName(typeid(*ic).name());
++  if (typeName.find("VirtualInputContext") != std::string_view::npos) {
++    raw = *reinterpret_cast<uint8_t**>(raw + 3 * sizeof(void*));
++    if (!raw) {
++      return;
++    }
++  }
++  if (!raw[54]) {
++    return;
++  }
++  void* vkObj = *reinterpret_cast<void**>(raw + 40);
++  if (!vkObj) {
++    return;
++  }
++  auto* proxy = *reinterpret_cast<struct wl_proxy**>(
++      reinterpret_cast<uint8_t*>(vkObj) + 2 * sizeof(void*));
++  if (!proxy) {
++    return;
++  }
++  constexpr uint32_t kZwpVirtualKeyboardV1ModifiersOpcode = 2;
++  uint32_t ver = getVer(proxy);
++  marshalFlags(proxy, kZwpVirtualKeyboardV1ModifiersOpcode, nullptr, ver, 0,
++               modsDepressed, 0u, 0u, 0u);
++}
++
++constexpr int kKey1 = 1;
++constexpr int kKey2 = 2;
++constexpr int kKey3 = 3;
++constexpr int kKey4 = 4;
++constexpr int kKey5 = 5;
++constexpr int kKey6 = 6;
++constexpr int kKey7 = 7;
++constexpr int kKey8 = 8;
++constexpr int kKey9 = 9;
++constexpr int kKey0 = 10;
++constexpr int kKeyStar = 11;
++constexpr int kKeyPound = 12;
++
++T9Item makeChar(char c) {
++  std::string s(1, c);
++  std::string lbl = (c == ' ') ? "SPC" : s;
++  return T9Item{lbl, s, FcitxKey_None, fcitx::KeyState::NoState, 0};
++}
++
++std::vector<T9Item> makeCharItems(const std::string& chars) {
++  std::vector<T9Item> out;
++  out.reserve(chars.size());
++  for (char c : chars) {
++    out.push_back(makeChar(c));
++  }
++  return out;
++}
++
++T9Item makeKey(const std::string& label, fcitx::KeySym sym, uint32_t xkbCode,
++               fcitx::KeyStates states = fcitx::KeyState::NoState) {
++  return T9Item{label, "", sym, states, xkbCode};
++}
++
++T9Item makeCtrlKey(const std::string& label, fcitx::KeySym sym,
++                   uint32_t xkbCode) {
++  return T9Item{label, "", sym, fcitx::KeyState::Ctrl, xkbCode};
++}
++
++bool charToCtrlKey(char ch, fcitx::KeySym* symOut, uint32_t* xkbCodeOut) {
++  char lower = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
++  switch (lower) {
++    case 'a':
++      *symOut = FcitxKey_a;
++      *xkbCodeOut = 38;
++      return true;
++    case 'b':
++      *symOut = FcitxKey_b;
++      *xkbCodeOut = 56;
++      return true;
++    case 'c':
++      *symOut = FcitxKey_c;
++      *xkbCodeOut = 54;
++      return true;
++    case 'd':
++      *symOut = FcitxKey_d;
++      *xkbCodeOut = 40;
++      return true;
++    case 'e':
++      *symOut = FcitxKey_e;
++      *xkbCodeOut = 26;
++      return true;
++    case 'f':
++      *symOut = FcitxKey_f;
++      *xkbCodeOut = 41;
++      return true;
++    case 'g':
++      *symOut = FcitxKey_g;
++      *xkbCodeOut = 42;
++      return true;
++    case 'h':
++      *symOut = FcitxKey_h;
++      *xkbCodeOut = 43;
++      return true;
++    case 'i':
++      *symOut = FcitxKey_i;
++      *xkbCodeOut = 31;
++      return true;
++    case 'j':
++      *symOut = FcitxKey_j;
++      *xkbCodeOut = 44;
++      return true;
++    case 'k':
++      *symOut = FcitxKey_k;
++      *xkbCodeOut = 45;
++      return true;
++    case 'l':
++      *symOut = FcitxKey_l;
++      *xkbCodeOut = 46;
++      return true;
++    case 'm':
++      *symOut = FcitxKey_m;
++      *xkbCodeOut = 58;
++      return true;
++    case 'n':
++      *symOut = FcitxKey_n;
++      *xkbCodeOut = 57;
++      return true;
++    case 'o':
++      *symOut = FcitxKey_o;
++      *xkbCodeOut = 32;
++      return true;
++    case 'p':
++      *symOut = FcitxKey_p;
++      *xkbCodeOut = 33;
++      return true;
++    case 'q':
++      *symOut = FcitxKey_q;
++      *xkbCodeOut = 24;
++      return true;
++    case 'r':
++      *symOut = FcitxKey_r;
++      *xkbCodeOut = 27;
++      return true;
++    case 's':
++      *symOut = FcitxKey_s;
++      *xkbCodeOut = 39;
++      return true;
++    case 't':
++      *symOut = FcitxKey_t;
++      *xkbCodeOut = 28;
++      return true;
++    case 'u':
++      *symOut = FcitxKey_u;
++      *xkbCodeOut = 30;
++      return true;
++    case 'v':
++      *symOut = FcitxKey_v;
++      *xkbCodeOut = 55;
++      return true;
++    case 'w':
++      *symOut = FcitxKey_w;
++      *xkbCodeOut = 25;
++      return true;
++    case 'x':
++      *symOut = FcitxKey_x;
++      *xkbCodeOut = 53;
++      return true;
++    case 'y':
++      *symOut = FcitxKey_y;
++      *xkbCodeOut = 29;
++      return true;
++    case 'z':
++      *symOut = FcitxKey_z;
++      *xkbCodeOut = 52;
++      return true;
++    case '[':
++      *symOut = FcitxKey_bracketleft;
++      *xkbCodeOut = 34;
++      return true;
++    case '\\':
++      *symOut = FcitxKey_backslash;
++      *xkbCodeOut = 51;
++      return true;
++    case ']':
++      *symOut = FcitxKey_bracketright;
++      *xkbCodeOut = 35;
++      return true;
++    case '^':
++    case '6':
++      *symOut = FcitxKey_6;
++      *xkbCodeOut = 15;
++      return true;
++    case '_':
++    case '-':
++      *symOut = FcitxKey_minus;
++      *xkbCodeOut = 20;
++      return true;
++    default:
++      return false;
++  }
++}
++
++int mapHardwareKey(const fcitx::Key& key) {
++  uint32_t code = key.code();
++  // XKB keycodes: KEY_1..KEY_9 = 10..18, KEY_0 = 19
++  if (code >= 10 && code <= 19) {
++    return static_cast<int>(code - 9);
++  }
++  // KEY_NUMERIC_STAR (evdev 522 -> XKB 530)
++  if (code == 530 || key.sym() == FcitxKey_asterisk ||
++      static_cast<uint32_t>(key.sym()) == 0x1008ffaa) {
++    return kKeyStar;
++  }
++  // KEY_NUMERIC_POUND (evdev 523 -> XKB 531)
++  if (code == 531 || key.sym() == FcitxKey_numbersign ||
++      static_cast<uint32_t>(key.sym()) == 0x1008ffab) {
++    return kKeyPound;
++  }
++  return -1;
++}
++
++}  // namespace
+ 
+ T9Engine::T9Engine(fcitx::Instance* instance)
+     : instance(instance), factory([this](fcitx::InputContext& ic) {
+@@ -18,146 +264,652 @@ T9Engine::T9Engine(fcitx::Instance* instance)
+   instance->inputContextManager().registerProperty("t9State", &factory);
+ }
+ 
++std::vector<fcitx::InputMethodEntry> T9Engine::listInputMethods() {
++  std::vector<fcitx::InputMethodEntry> result;
++  result.emplace_back("t9", "T9", "en", "t9")
++      .setLabel("T9")
++      .setIcon("input-keyboard")
++      .setConfigurable(false);
++  return result;
++}
++
+ void T9Engine::keyEvent(const fcitx::InputMethodEntry& entry,
+                         fcitx::KeyEvent& keyEvent) {
+   FCITX_UNUSED(entry);
+-  FCITX_INFO() << keyEvent.key().code()
++  FCITX_INFO() << "T9 keyEvent code=" << keyEvent.key().code()
++               << " sym=" << keyEvent.key().sym()
+                << " isRelease=" << keyEvent.isRelease();
+-  int EVDEV_OFFSET = 9;
+-
+-  fcitx::Key key = keyEvent.key();
+-  std::string output;
+-  int keyCode = key.code() - EVDEV_OFFSET;
+-  auto match = keypadMap.find(keyCode);
+   auto* ic = keyEvent.inputContext();
+   auto* state = ic->propertyFor(&factory);
+-  if (match == keypadMap.end()) {
+-    // This is for other keys, just forward (on press, and ignore the release)
+-    FCITX_INFO() << "not a number" << output;
+-    state->cancelCommit();
+-    return;
+-  } else {
+-    state->keyEvent(keyEvent, match->second, keyCode);
++  if (state->handleKeyEvent(keyEvent)) {
++    keyEvent.filterAndAccept();
+   }
+-  keyEvent.filterAndAccept();
++}
++
++void T9Engine::reset(const fcitx::InputMethodEntry& entry,
++                     fcitx::InputContextEvent& event) {
++  FCITX_UNUSED(entry);
++  auto* ic = event.inputContext();
++  auto* state = ic->propertyFor(&factory);
++  state->reset();
+ }
+ 
+ FCITX_ADDON_FACTORY(T9EngineFactory);
+ 
+-void T9State::handleT9(const std::string& chars, int keyCode) {
+-  FCITX_INFO() << "handleT9: keyCode=" << keyCode
+-               << " lastKeyCode=" << lastKeyCode
+-               << " currentIndex=" << currentIndex
+-               << " chars.length()=" << chars.length();
+-  if (lastKeyCode != -1 && keyCode != lastKeyCode) {
+-    cancelCommit();
+-    commit();
++std::string T9State::modePrefix() const {
++  std::string p;
++  switch (mode) {
++    case T9Mode::Lower:
++      p = "abc";
++      break;
++    case T9Mode::Shift:
++      p = "Abc";
++      break;
++    case T9Mode::Upper:
++      p = "ABC";
++      break;
++    case T9Mode::Sym:
++      p = "Sym";
++      break;
++    case T9Mode::Ctrl:
++      p = "Ctl";
++      break;
++    case T9Mode::Num:
++      p = "123";
++      break;
+   }
+-  if (keyCode == lastKeyCode) {
+-    if (++currentIndex >= chars.length()) {
+-      currentIndex = 0;
++  if (ctrlLatch) {
++    p += "+^";
++  }
++  return p;
++}
++
++std::vector<T9Item> T9State::getItemsForKey(int keyId) const {
++  if (mode == T9Mode::Sym) {
++    switch (keyId) {
++      case kKey1:
++        return makeCharItems(".,!?:;-_1");
++      case kKey2:
++        return makeCharItems("@#$%^&2");
++      case kKey3:
++        return makeCharItems("()[]{}<>3");
++      case kKey4:
++        return makeCharItems("+-*/=_4");
++      case kKey5:
++        return makeCharItems("|\\~`'\"5");
++      case kKey6:
++        return makeCharItems("'\"`~^6");
++      case kKey7:
++        return makeCharItems("/\\|_-+7");
++      case kKey8:
++        return makeCharItems("<>!=?&8");
++      case kKey9:
++        return makeCharItems("$%^&*#@9");
++      case kKey0: {
++        auto v = makeCharItems(" 0");
++        v.push_back(makeKey("Tab", FcitxKey_Tab, 23));
++        v.push_back(makeKey("Ent", FcitxKey_Return, 36));
++        v.push_back(makeKey("Esc", FcitxKey_Escape, 9));
++        return v;
++      }
++      case kKeyStar:
++        return makeCharItems("*#+-=_/\\|~`@$%^&()[]{}<>'\".,!?:;");
++      default:
++        return {};
+     }
+   }
+-  cancelCommit();
+-  std::string output;
+-  output += chars[currentIndex];
+-  currentChar = output;
+-  scheduleCommit();
+-  lastKeyCode = keyCode;
+-  showPreview(chars, currentIndex);
++
++  if (mode == T9Mode::Ctrl) {
++    switch (keyId) {
++      case kKey1:
++        return {
++            makeKey("Esc", FcitxKey_Escape, 9),
++            makeKey("Tab", FcitxKey_Tab, 23),
++            makeKey("Del", FcitxKey_Delete, 119),
++            makeKey("Ins", FcitxKey_Insert, 118),
++            makeKey("Bksp", FcitxKey_BackSpace, 22),
++        };
++      case kKey2:
++        return {
++            makeCtrlKey("^C", FcitxKey_c, 54),
++            makeCtrlKey("^D", FcitxKey_d, 40),
++            makeCtrlKey("^Z", FcitxKey_z, 52),
++            makeCtrlKey("^X", FcitxKey_x, 53),
++            makeCtrlKey("^\\", FcitxKey_backslash, 51),
++        };
++      case kKey3:
++        return {
++            makeCtrlKey("^A", FcitxKey_a, 38),
++            makeCtrlKey("^E", FcitxKey_e, 26),
++            makeCtrlKey("^U", FcitxKey_u, 30),
++            makeCtrlKey("^K", FcitxKey_k, 45),
++            makeCtrlKey("^W", FcitxKey_w, 25),
++        };
++      case kKey4:
++        return {
++            makeCtrlKey("^R", FcitxKey_r, 27),
++            makeCtrlKey("^L", FcitxKey_l, 46),
++            makeCtrlKey("^P", FcitxKey_p, 33),
++            makeCtrlKey("^N", FcitxKey_n, 57),
++            makeCtrlKey("^G", FcitxKey_g, 42),
++        };
++      case kKey5:
++        return {
++            makeCtrlKey("^S", FcitxKey_s, 39),
++            makeCtrlKey("^Q", FcitxKey_q, 24),
++            makeCtrlKey("^O", FcitxKey_o, 32),
++            makeCtrlKey("^T", FcitxKey_t, 28),
++            makeCtrlKey("^Y", FcitxKey_y, 29),
++        };
++      case kKey6:
++        return {
++            makeCtrlKey("^B", FcitxKey_b, 56),
++            makeCtrlKey("^F", FcitxKey_f, 41),
++            makeCtrlKey("^V", FcitxKey_v, 55),
++            makeCtrlKey("^H", FcitxKey_h, 43),
++            makeCtrlKey("^[", FcitxKey_bracketleft, 34),
++            makeCtrlKey("^]", FcitxKey_bracketright, 35),
++            makeCtrlKey("^^", FcitxKey_6, 15),
++            makeCtrlKey("^_", FcitxKey_minus, 20),
++        };
++      case kKey7:
++        return {
++            makeKey("PgUp", FcitxKey_Page_Up, 112),
++            makeKey("PgDn", FcitxKey_Page_Down, 117),
++            makeKey("Home", FcitxKey_Home, 110),
++            makeKey("End", FcitxKey_End, 115),
++        };
++      case kKey8:
++        return {
++            makeKey("Up", FcitxKey_Up, 111),
++            makeKey("Down", FcitxKey_Down, 116),
++            makeKey("Left", FcitxKey_Left, 113),
++            makeKey("Right", FcitxKey_Right, 114),
++        };
++      case kKey9:
++        return {
++            makeKey("F1", FcitxKey_F1, 67),   makeKey("F2", FcitxKey_F2, 68),
++            makeKey("F3", FcitxKey_F3, 69),   makeKey("F4", FcitxKey_F4, 70),
++            makeKey("F5", FcitxKey_F5, 71),   makeKey("F6", FcitxKey_F6, 72),
++            makeKey("F7", FcitxKey_F7, 73),   makeKey("F8", FcitxKey_F8, 74),
++            makeKey("F9", FcitxKey_F9, 75),   makeKey("F10", FcitxKey_F10, 76),
++            makeKey("F11", FcitxKey_F11, 95), makeKey("F12", FcitxKey_F12, 96),
++        };
++      case kKey0:
++        return {
++            makeChar(' '),
++            makeKey("Tab", FcitxKey_Tab, 23),
++            makeKey("Ent", FcitxKey_Return, 36),
++            makeKey("Esc", FcitxKey_Escape, 9),
++        };
++      case kKeyStar:
++        return {
++            makeKey("Esc", FcitxKey_Escape, 9),
++            makeKey("Tab", FcitxKey_Tab, 23),
++            makeCtrlKey("^C", FcitxKey_c, 54),
++            makeCtrlKey("^D", FcitxKey_d, 40),
++            makeCtrlKey("^Z", FcitxKey_z, 52),
++            makeCtrlKey("^X", FcitxKey_x, 53),
++            makeCtrlKey("^L", FcitxKey_l, 46),
++            makeCtrlKey("^R", FcitxKey_r, 27),
++            makeCtrlKey("^W", FcitxKey_w, 25),
++        };
++      default:
++        return {};
++    }
++  }
++
++  bool upperFirst = (mode == T9Mode::Shift || mode == T9Mode::Upper);
++  switch (keyId) {
++    case kKey1:
++      return makeCharItems(".,-_!?/@:;'\"+=*#$%^&()[]{}<>|\\~`1");
++    case kKey2:
++      return makeCharItems(upperFirst ? "ABC2abc" : "abc2ABC");
++    case kKey3:
++      return makeCharItems(upperFirst ? "DEF3def" : "def3DEF");
++    case kKey4:
++      return makeCharItems(upperFirst ? "GHI4ghi" : "ghi4GHI");
++    case kKey5:
++      return makeCharItems(upperFirst ? "JKL5jkl" : "jkl5JKL");
++    case kKey6:
++      return makeCharItems(upperFirst ? "MNO6mno" : "mno6MNO");
++    case kKey7:
++      return makeCharItems(upperFirst ? "PQRS7pqrs" : "pqrs7PQRS");
++    case kKey8:
++      return makeCharItems(upperFirst ? "TUV8tuv" : "tuv8TUV");
++    case kKey9:
++      return makeCharItems(upperFirst ? "WXYZ9wxyz" : "wxyz9WXYZ");
++    case kKey0: {
++      auto v = makeCharItems(" 0");
++      v.push_back(makeKey("Ent", FcitxKey_Return, 36));
++      v.push_back(makeKey("Tab", FcitxKey_Tab, 23));
++      return v;
++    }
++    case kKeyStar: {
++      auto v = makeCharItems("*#+-=_/\\|~`@$%^&()[]{}<>'\".,!?:;");
++      v.push_back(makeKey("Tab", FcitxKey_Tab, 23));
++      v.push_back(makeKey("Esc", FcitxKey_Escape, 9));
++      v.push_back(makeCtrlKey("^C", FcitxKey_c, 54));
++      v.push_back(makeCtrlKey("^D", FcitxKey_d, 40));
++      v.push_back(makeCtrlKey("^Z", FcitxKey_z, 52));
++      return v;
++    }
++    default:
++      return {};
++  }
+ }
+ 
+-void T9State::keyEvent(fcitx::KeyEvent& keyEvent, const std::string& chars,
+-                       int keyCode) {
+-  // This is for keypad
+-  FCITX_INFO() << "key pad press";
+-  if (keyEvent.isRelease()) {
+-    isPressing = false;
+-    if (isLongPress == true) {
+-      // Release after a long press, ignore as we already processed
+-      // the action.
+-      isLongPress = false;
+-      return;
++void T9State::cycleMode() {
++  switch (mode) {
++    case T9Mode::Lower:
++      mode = T9Mode::Shift;
++      break;
++    case T9Mode::Shift:
++      mode = T9Mode::Upper;
++      break;
++    case T9Mode::Upper:
++      mode = T9Mode::Sym;
++      break;
++    case T9Mode::Sym:
++      mode = T9Mode::Ctrl;
++      break;
++    case T9Mode::Ctrl:
++      mode = T9Mode::Num;
++      break;
++    case T9Mode::Num:
++      mode = T9Mode::Lower;
++      break;
++  }
++  showStatusBanner("[Mode: " + modePrefix() + "]");
++}
++
++void T9State::toggleCurrentCase() {
++  if (activeItems.empty() || currentIndex < 0 ||
++      static_cast<size_t>(currentIndex) >= activeItems.size()) {
++    return;
++  }
++  const std::string& cur = activeItems[currentIndex].commitText;
++  if (cur.size() == 1 && std::isalpha(static_cast<unsigned char>(cur[0]))) {
++    char target = std::isupper(static_cast<unsigned char>(cur[0]))
++                      ? static_cast<char>(
++                            std::tolower(static_cast<unsigned char>(cur[0])))
++                      : static_cast<char>(
++                            std::toupper(static_cast<unsigned char>(cur[0])));
++    for (size_t i = 0; i < activeItems.size(); ++i) {
++      if (activeItems[i].commitText.size() == 1 &&
++          activeItems[i].commitText[0] == target) {
++        currentIndex = static_cast<int>(i);
++        break;
++      }
+     }
+-    handleT9(chars, keyCode);
++    scheduleCommit();
++    showPreview(activeItems, currentIndex);
+   } else {
+-    if (isLongPress) {
+-      // Action already process
+-      return;
++    stepCandidate(4);
++  }
++}
++
++void T9State::stepCandidate(int delta) {
++  if (activeItems.empty()) {
++    return;
++  }
++  int n = static_cast<int>(activeItems.size());
++  currentIndex = ((currentIndex + delta) % n + n) % n;
++  scheduleCommit();
++  showPreview(activeItems, currentIndex);
++}
++
++bool T9State::handleKeyEvent(fcitx::KeyEvent& keyEvent) {
++  fcitx::Key key = keyEvent.key();
++  uint32_t code = key.code();
++  fcitx::KeySym sym = key.sym();
++
++  // Handle preedit navigation when an uncommitted character is active
++  if (!activeItems.empty()) {
++    if (sym == FcitxKey_BackSpace || code == 22) {
++      if (!keyEvent.isRelease()) {
++        cancelCommit();
++        lastKeyId = -1;
++        currentIndex = 0;
++        activeItems.clear();
++      }
++      return true;
+     }
+-    auto now = std::chrono::steady_clock::now();
+-    if (!isPressing) {
+-      keyPressTime = now;
+-      isPressing = true;
+-    } else {
+-      auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+-                          now - keyPressTime)
+-                          .count();
+-      if (duration >= 500) {
+-        isLongPress = true;
+-        std::string output;
+-        output += chars.back();
+-        currentChar = output;
++    if (sym == FcitxKey_Left || code == 113) {
++      if (!keyEvent.isRelease()) {
++        stepCandidate(-1);
++      }
++      return true;
++    }
++    if (sym == FcitxKey_Right || code == 114 || sym == FcitxKey_Return ||
++        code == 36) {
++      if (!keyEvent.isRelease()) {
+         commit();
+       }
++      return true;
++    }
++    if (sym == FcitxKey_Up || code == 111) {
++      if (!keyEvent.isRelease()) {
++        toggleCurrentCase();
++      }
++      return true;
++    }
++    if (sym == FcitxKey_Down || code == 116) {
++      if (!keyEvent.isRelease()) {
++        if (activeItems[currentIndex].commitText.size() == 1 &&
++            std::isalpha(static_cast<unsigned char>(
++                activeItems[currentIndex].commitText[0]))) {
++          toggleCurrentCase();
++        } else {
++          stepCandidate(-4);
++        }
++      }
++      return true;
++    }
++  }
++
++  if (mode == T9Mode::Ctrl) {
++    if (sym == FcitxKey_Up || code == 111) {
++      if (!keyEvent.isRelease()) {
++        forwardKeyTap(FcitxKey_Page_Up, fcitx::KeyState::NoState, 112);
++      }
++      return true;
++    }
++    if (sym == FcitxKey_Down || code == 116) {
++      if (!keyEvent.isRelease()) {
++        forwardKeyTap(FcitxKey_Page_Down, fcitx::KeyState::NoState, 117);
++      }
++      return true;
++    }
++    if (sym == FcitxKey_Left || code == 113) {
++      if (!keyEvent.isRelease()) {
++        forwardKeyTap(FcitxKey_Home, fcitx::KeyState::NoState, 110);
++      }
++      return true;
++    }
++    if (sym == FcitxKey_Right || code == 114) {
++      if (!keyEvent.isRelease()) {
++        forwardKeyTap(FcitxKey_End, fcitx::KeyState::NoState, 115);
++      }
++      return true;
++    }
++  }
++
++  int keyId = mapHardwareKey(key);
++  if (keyId < 0) {
++    if (!keyEvent.isRelease()) {
++      commit();
++    }
++    return false;
++  }
++
++  if (keyEvent.isRelease()) {
++    cancelLongPressTimer();
++    int releasedId = pressedKeyId;
++    pressedKeyId = -1;
++    if (isLongPressHandled) {
++      isLongPressHandled = false;
++      return true;
++    }
++    if (releasedId != keyId && releasedId != -1) {
++      return true;
++    }
++    if (keyId == kKeyPound) {
++      if (!activeItems.empty()) {
++        toggleCurrentCase();
++      } else {
++        cycleMode();
++      }
++      return true;
++    }
++    if (mode == T9Mode::Num) {
++      if (bannerTimer) {
++        bannerTimer.reset();
++        resetUI();
++      }
++      if (keyId >= kKey1 && keyId <= kKey9) {
++        sendItem(makeChar(static_cast<char>('0' + keyId)));
++      } else if (keyId == kKey0) {
++        sendItem(makeChar('0'));
++      } else if (keyId == kKeyStar) {
++        sendItem(makeChar('*'));
++      }
++      return true;
++    }
++    handleMultiTap(keyId);
++    return true;
++  }
++
++  // Key press event
++  if (pressedKeyId != keyId) {
++    pressedKeyId = keyId;
++    isLongPressHandled = false;
++    startLongPressTimer(keyId);
++  }
++  return true;
++}
++
++void T9State::startLongPressTimer(int keyId) {
++  cancelLongPressTimer();
++  longPressTimer = engine->instance->eventLoop().addTimeEvent(
++      CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + 450000, 0,
++      [this, keyId](fcitx::EventSourceTime*, uint64_t) {
++        onLongPress(keyId);
++        return true;
++      });
++}
++
++void T9State::cancelLongPressTimer() {
++  if (longPressTimer) {
++    longPressTimer.reset();
++  }
++}
++
++void T9State::onLongPress(int keyId) {
++  isLongPressHandled = true;
++  if (!activeItems.empty()) {
++    commit();
++  }
++  if (keyId >= kKey1 && keyId <= kKey9) {
++    sendItem(makeChar(static_cast<char>('0' + keyId)));
++    resetUI();
++  } else if (keyId == kKey0) {
++    sendItem(makeChar('0'));
++    resetUI();
++  } else if (keyId == kKeyStar) {
++    if (mode == T9Mode::Num) {
++      sendItem(makeChar('.'));
++      resetUI();
++    } else {
++      ctrlLatch = !ctrlLatch;
++      showStatusBanner(ctrlLatch ? "[Ctrl+ LATCH ON]" : "[Ctrl+ LATCH OFF]");
+     }
++  } else if (keyId == kKeyPound) {
++    sendItem(makeChar('#'));
++    resetUI();
++  }
++}
++
++void T9State::handleMultiTap(int keyId) {
++  if (bannerTimer) {
++    bannerTimer.reset();
++  }
++  if (lastKeyId != -1 && keyId != lastKeyId) {
++    commit();
++  }
++  if (keyId == lastKeyId && !activeItems.empty()) {
++    currentIndex = (currentIndex + 1) % static_cast<int>(activeItems.size());
++  } else {
++    activeItems = getItemsForKey(keyId);
++    currentIndex = 0;
++    lastKeyId = keyId;
+   }
++  if (activeItems.empty()) {
++    return;
++  }
++  uint64_t delayUs = (activeItems.size() > 10) ? 750000 : 600000;
++  scheduleCommit(delayUs);
++  showPreview(activeItems, currentIndex);
+ }
++
+ void T9State::reset() {
++  cancelLongPressTimer();
+   cancelCommit();
+-  lastKeyCode = -1;
++  if (bannerTimer) {
++    bannerTimer.reset();
++  }
++  lastKeyId = -1;
++  pressedKeyId = -1;
+   currentIndex = 0;
+-  currentChar.clear();
+-  isLongPress = false;
+-  isPressing = false;
++  activeItems.clear();
++  isLongPressHandled = false;
++  ctrlLatch = false;
+ }
++
++void T9State::forwardKeyTap(fcitx::KeySym sym, fcitx::KeyStates states,
++                            uint32_t xkbCode) {
++  if (states.test(fcitx::KeyState::Ctrl)) {
++    constexpr uint32_t kXkbModCtrl = (1u << 2);
++    sendWaylandVkModifiers(ic, kXkbModCtrl);
++    ic->forwardKey(fcitx::Key(sym, fcitx::KeyState::Ctrl, xkbCode), false);
++    sendWaylandVkModifiers(ic, 0u);
++  } else {
++    ic->forwardKey(fcitx::Key(sym, states, xkbCode), false);
++  }
++}
++
++void T9State::sendItem(const T9Item& item) {
++  if (ctrlLatch && !item.commitText.empty()) {
++    fcitx::KeySym cSym = FcitxKey_None;
++    uint32_t cCode = 0;
++    ctrlLatch = false;
++    if (charToCtrlKey(item.commitText[0], &cSym, &cCode)) {
++      forwardKeyTap(cSym, fcitx::KeyState::Ctrl, cCode);
++      return;
++    }
++  }
++  ctrlLatch = false;
++  if (item.sym != FcitxKey_None) {
++    forwardKeyTap(item.sym, item.states, item.xkbCode);
++  } else if (!item.commitText.empty()) {
++    ic->commitString(item.commitText);
++    if (mode == T9Mode::Shift &&
++        std::isalpha(static_cast<unsigned char>(item.commitText[0]))) {
++      mode = T9Mode::Lower;
++    }
++  }
++}
++
+ void T9State::commit() {
+-  if (!currentChar.empty()) {
+-    FCITX_INFO() << "commitString with char=" << currentChar;
+-    ic->commitString(currentChar);
++  if (commitTimer) {
++    commitTimer.reset();
++  }
++  if (!activeItems.empty() && currentIndex >= 0 &&
++      static_cast<size_t>(currentIndex) < activeItems.size()) {
++    T9Item chosen = activeItems[currentIndex];
++    activeItems.clear();
++    lastKeyId = -1;
++    currentIndex = 0;
++    resetUI();
++    sendItem(chosen);
++  } else {
++    activeItems.clear();
++    lastKeyId = -1;
++    currentIndex = 0;
+     resetUI();
+   }
+-  currentChar.clear();
+-  lastKeyCode = -1;
+-  currentIndex = 0;
+ }
+-void T9State::scheduleCommit() {
+-  FCITX_INFO() << "call of scheduleCommit with char=" << currentChar;
++
++void T9State::scheduleCommit(uint64_t delayUs) {
++  if (commitTimer) {
++    commitTimer.reset();
++  }
+   commitTimer = engine->instance->eventLoop().addTimeEvent(
+-      CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + 500000, 0,
++      CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + delayUs, 0,
+       [this](fcitx::EventSourceTime*, uint64_t) {
+         commit();
+         return true;
+       });
+ }
++
+ void T9State::cancelCommit() {
+-  FCITX_INFO() << "cancelCommit";
+   if (commitTimer) {
+-    FCITX_INFO() << "reset timer";
+     commitTimer.reset();
+   }
+   resetUI();
+ }
++
+ void T9State::resetUI() {
+   ic->inputPanel().reset();
+   ic->updatePreedit();
++  ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+ }
+-void T9State::showPreview(const std::string& chars, int index) {
+-  std::string preedit;
++
++void T9State::showStatusBanner(const std::string& msg) {
++  if (bannerTimer) {
++    bannerTimer.reset();
++  }
+   auto& inputPanel = ic->inputPanel();
+-  for (size_t i = 0; i < chars.length(); ++i) {
++  inputPanel.reset();
++  fcitx::Text text;
++  text.append(msg);
++  if (ic->capabilityFlags().test(fcitx::CapabilityFlag::Preedit)) {
++    inputPanel.setClientPreedit(text);
++    ic->updatePreedit();
++  } else {
++    inputPanel.setPreedit(text);
++  }
++  ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
++  bannerTimer = engine->instance->eventLoop().addTimeEvent(
++      CLOCK_MONOTONIC, fcitx::now(CLOCK_MONOTONIC) + 900000, 0,
++      [this](fcitx::EventSourceTime*, uint64_t) {
++        resetUI();
++        return true;
++      });
++}
++
++void T9State::showPreview(const std::vector<T9Item>& items, int index) {
++  int total = static_cast<int>(items.size());
++  if (total == 0) {
++    return;
++  }
++  constexpr int kMaxVisible = 7;
++  int start = 0;
++  int end = total;
++  if (total > kMaxVisible) {
++    start = index - (kMaxVisible / 2);
++    if (start < 0) {
++      start = 0;
++    }
++    end = start + kMaxVisible;
++    if (end > total) {
++      end = total;
++      start = end - kMaxVisible;
++    }
++  }
++
++  std::string preedit = modePrefix() + ": ";
++  if (start > 0) {
++    preedit += "< ";
++  }
++  for (int i = start; i < end; ++i) {
+     if (i == index) {
+       preedit += "[";
+-      preedit += chars[i];
++      preedit += items[i].label;
+       preedit += "]";
+     } else {
+-      preedit += chars[i];
++      preedit += items[i].label;
+     }
+-    if (i < chars.length() - 1) {
++    if (i < end - 1) {
+       preedit += " ";
+     }
+   }
++  if (end < total) {
++    preedit += " >";
++  }
+ 
++  auto& inputPanel = ic->inputPanel();
++  inputPanel.reset();
+   fcitx::Text text;
+   text.append(preedit);
+   if (ic->capabilityFlags().test(fcitx::CapabilityFlag::Preedit)) {
+diff --git a/src/t9.h b/src/t9.h
+index 09f8581..b88cf85 100644
+--- a/src/t9.h
++++ b/src/t9.h
+@@ -2,55 +2,92 @@
+ #define _FCITX5_T9_T9_H_
+ 
+ #include <fcitx-utils/event.h>
++#include <fcitx-utils/key.h>
++#include <fcitx-utils/keysym.h>
+ #include <fcitx/addonfactory.h>
+ #include <fcitx/addonmanager.h>
+ #include <fcitx/inputcontext.h>
+ #include <fcitx/inputmethodengine.h>
+ #include <fcitx/instance.h>
+ 
+-#include <chrono>
++#include <cstdint>
++#include <map>
+ #include <memory>
++#include <string>
++#include <vector>
+ 
+ class T9Engine;
+ 
++enum class T9Mode {
++  Lower = 0,  // abc: lowercase first, then digit, then uppercase
++  Shift = 1,  // Abc: uppercase for next character, then auto-reverts to Lower
++  Upper = 2,  // ABC: uppercase first, then digit, then lowercase
++  Sym = 3,    // Sym: full ASCII punctuation & symbols grouped across 1-9, 0, *
++  Ctrl = 4,   // Ctl: terminal control chars (^A-^Z) & navigation/function keys
++  Num = 5     // 123: instant single-tap numeric entry
++};
++
++struct T9Item {
++  std::string label;
++  std::string commitText;
++  fcitx::KeySym sym = FcitxKey_None;
++  fcitx::KeyStates states = fcitx::KeyState::NoState;
++  uint32_t xkbCode = 0;
++};
++
+ class T9State : public fcitx::InputContextProperty {
+  public:
+   T9State(T9Engine* engine, fcitx::InputContext* ic) : engine(engine), ic(ic) {}
+ 
+-  void keyEvent(fcitx::KeyEvent& keyEvent, const std::string& chars,
+-                int keyCode);
+-  void updateUI();
++  bool handleKeyEvent(fcitx::KeyEvent& keyEvent);
+   void cancelCommit();
+   void reset();
+ 
+  private:
+-  void scheduleCommit();
++  std::vector<T9Item> getItemsForKey(int keyId) const;
++  std::string modePrefix() const;
++  void cycleMode();
++  void toggleCurrentCase();
++  void stepCandidate(int delta);
++  void startLongPressTimer(int keyId);
++  void cancelLongPressTimer();
++  void onLongPress(int keyId);
++  void scheduleCommit(uint64_t delayUs = 600000);
+   void commit();
++  void sendItem(const T9Item& item);
++  void forwardKeyTap(fcitx::KeySym sym, fcitx::KeyStates states,
++                     uint32_t xkbCode);
+   void resetUI();
+-  void showPreview(const std::string& chars, int index);
+-  void handleT9(const std::string& chars, int keyCode);
++  void showPreview(const std::vector<T9Item>& items, int index);
++  void showStatusBanner(const std::string& msg);
++  void handleMultiTap(int keyId);
++
+   T9Engine* engine;
+   fcitx::InputContext* ic;
+-  int lastKeyCode = -1;
++  T9Mode mode = T9Mode::Lower;
++  bool ctrlLatch = false;
++  int lastKeyId = -1;
++  int pressedKeyId = -1;
+   int currentIndex = 0;
+-  std::string currentChar;
+-  std::unique_ptr<fcitx::EventSource> commitTimer;
+-  fcitx::InputContext* currentIC = nullptr;
+-  std::chrono::steady_clock::time_point keyPressTime;
+-  bool isLongPress = false;
+-  bool isPressing = false;
++  std::vector<T9Item> activeItems;
++  std::unique_ptr<fcitx::EventSourceTime> commitTimer;
++  std::unique_ptr<fcitx::EventSourceTime> longPressTimer;
++  std::unique_ptr<fcitx::EventSourceTime> bannerTimer;
++  bool isLongPressHandled = false;
+ };
+ 
+ class T9Engine : public fcitx::InputMethodEngineV2 {
+  public:
+-  T9Engine(fcitx::Instance* instance);
++  explicit T9Engine(fcitx::Instance* instance);
++  std::vector<fcitx::InputMethodEntry> listInputMethods() override;
+   void keyEvent(const fcitx::InputMethodEntry& entry,
+                 fcitx::KeyEvent& keyEvent) override;
++  void reset(const fcitx::InputMethodEntry& entry,
++             fcitx::InputContextEvent& event) override;
+   fcitx::Instance* instance;
+ 
+  private:
+   fcitx::FactoryFor<T9State> factory;
+-  static const std::map<int, std::string> keypadMap;
+ };
+ 
+ class T9EngineFactory : public fcitx::AddonFactory {

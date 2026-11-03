@@ -1,0 +1,168 @@
+diff --git a/Library/firehose.py b/Library/firehose.py
+index 4e7b8a4..55cf187 100644
+--- a/Library/firehose.py
++++ b/Library/firehose.py
+@@ -134,6 +134,17 @@ class qualcomm_firehose:
+             return False
+ 
+ 
++    def wait_response(self):
++        data = bytearray()
++        while b"<response" not in data:
++            try:
++                data += self.cdc.read(self.cfg.MaxXMLSizeInBytes)
++            except:
++                break
++        info = self.xml.getlog(data)
++        rsp = self.xml.getresponse(data)
++        return info, rsp
++
+     def cmd_write(self,physical_partition_number,start_sector,filename,Display=True):
+         size = os.stat(filename).st_size
+         with open(filename,"rb") as rf:
+@@ -170,6 +181,7 @@ class qualcomm_firehose:
+                     if (prog > old):
+                         if Display:
+                             print_progress(prog, 100, prefix='Progress:', suffix='Complete', bar_length=50)
++                        old = prog
+                     bytesToWrite -= wlen
+                     pos+=wlen
+                     #time.sleep(0.05)
+@@ -177,7 +189,12 @@ class qualcomm_firehose:
+                     print_progress(100, 100, prefix='Progress:', suffix='Complete', bar_length=50)
+                 self.cdc.write(b'',self.cfg.MaxPayloadSizeToTargetInBytes)
+                 time.sleep(0.2)
+-                info = self.xml.getlog(self.cdc.read(self.cfg.MaxXMLSizeInBytes))
++                info, rsp = self.wait_response()
++                if rsp.get("value") == "ACK":
++                    return True
++                else:
++                    print(f"Error:{info}")
++                    return False
+             else:
+                 print(f"Error:{rsp}")
+                 return False
+@@ -210,6 +227,7 @@ class qualcomm_firehose:
+                     if (prog > old):
+                         if Display:
+                             print_progress(prog, 100, prefix='Progress:', suffix='Complete', bar_length=50)
++                        old = prog
+                     bytesToWrite -= wlen
+                     pos+=wlen
+                     #time.sleep(0.05)
+@@ -217,12 +235,11 @@ class qualcomm_firehose:
+                     print_progress(100, 100, prefix='Progress:', suffix='Complete', bar_length=50)
+                 self.cdc.write(b'',self.cfg.MaxPayloadSizeToTargetInBytes)
+                 time.sleep(0.2)
+-                info = self.xml.getlog(self.cdc.read(self.cfg.MaxXMLSizeInBytes))
+-                rsp=self.xml.getresponse(self.cdc.read(self.cfg.MaxXMLSizeInBytes))
+-                if rsp["value"]=="ACK":
++                info, rsp = self.wait_response()
++                if rsp.get("value")=="ACK":
+                     return True
+                 else:
+-                    print(f"Error:{info[1]}")
++                    print(f"Error:{info}")
+             else:
+                 print(f"Error:{rsp}")
+                 return False
+@@ -258,12 +275,11 @@ class qualcomm_firehose:
+             if Display and prog!=100:
+                 print_progress(100, 100, prefix='Progress:', suffix='Complete', bar_length=50)
+             time.sleep(0.2)
+-            info = self.xml.getlog(self.cdc.read(self.cfg.MaxXMLSizeInBytes))
+-            rsp=self.xml.getresponse(self.cdc.read(self.cfg.MaxXMLSizeInBytes))
+-            if rsp["value"]=="ACK":
++            info, rsp = self.wait_response()
++            if rsp.get("value")=="ACK":
+                 return resData
+             else:
+-                print(f"Error:{info[1]}")
++                print(f"Error:{info}")
+                 return ""
+         else:
+             print(f"Error:{rsp[2]}")
+@@ -302,12 +318,11 @@ class qualcomm_firehose:
+                 if Display and prog!=100:
+                     print_progress(100, 100, prefix='Progress:', suffix='Complete', bar_length=50)
+                 time.sleep(0.2)
+-                info = self.xml.getlog(self.cdc.read(self.cfg.MaxXMLSizeInBytes))
+-                rsp = self.xml.getresponse(self.cdc.read(self.cfg.MaxXMLSizeInBytes))
+-                if rsp["value"]=="ACK":
++                info, rsp = self.wait_response()
++                if rsp.get("value")=="ACK":
+                     return tmp
+                 else:
+-                    print(f"Error:{tmp}")
++                    print(f"Error:{info}")
+                     return ""
+             else:
+                 print(f"Error:{rsp[1]}")
+diff --git a/Library/gpt.py b/Library/gpt.py
+index cd972b9..c3ab4f6 100644
+--- a/Library/gpt.py
++++ b/Library/gpt.py
+@@ -116,6 +116,7 @@ class gpt:
+         self.num_part_entries = num_part_entries
+         self.part_entry_size = part_entry_size
+         self.part_entry_start_lba = part_entry_start_lba
++        self.gpt_header = list(gpt.gpt_header)
+         if num_part_entries is None:
+             self.gpt_header += [('num_part_entries', 'I'),]
+             if part_entry_size is None:
+diff --git a/Library/utils.py b/Library/utils.py
+index 06abf2c..9a61b0b 100644
+--- a/Library/utils.py
++++ b/Library/utils.py
+@@ -1,7 +1,13 @@
+ import sys
+ import struct
+-from capstone import *
+-from keystone import *
++try:
++    from capstone import *
++except ImportError:
++    pass
++try:
++    from keystone import *
++except ImportError:
++    pass
+ import codecs
+ 
+ class elf:
+diff --git a/edl.py b/edl.py
+old mode 100644
+new mode 100755
+index 6b9ecbc..f81142d
+--- a/edl.py
++++ b/edl.py
+@@ -6,6 +6,8 @@ Licensed under MIT License, (c) B. Kerler 2018-2019
+ import argparse
+ import time
+ import os
++import sys
++sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+ from Library.utils import *
+ from Library.usb import usb_class
+ from Library.gpt import gpt
+@@ -80,7 +82,7 @@ def main():
+     parser.add_argument('-maxpayload',metavar="<bytes>",help='[Option] The max bytes to transfer in firehose mode (default=1048576)', type=int, default=1048576)
+     parser.add_argument('-skipwrite', help='[Option] Do not write actual data to disk (use this for UFS provisioning)', action="store_true")
+     parser.add_argument('-skipstorageinit', help='[Option] Do not initialize storage device (use this for UFS provisioning)',action="store_true")
+-    parser.add_argument('-memory', metavar="<UFS/eMMC>",help='[Option] Memory type (default=UFS)',default='UFS')
++    parser.add_argument('-memory', metavar="<UFS/eMMC>",help='[Option] Memory type (default=eMMC)',default='eMMC')
+     parser.add_argument('-sectorsize', metavar="<bytes>",help='[Option] Define Disk Sector Size (default=512)',type=int,default=512)
+     parser.add_argument('-lun', metavar="<num>",help='[Option] Define LUN',type=int,default=0)
+     #parser.add_argument('-debug', help='[Option] Enable debug output', action="store_true")
+@@ -176,7 +178,10 @@ def main():
+                mode="Firehose"
+                print("Successfully uploaded programmer :)")
+     else:
+-        sahara.bit64=True
++        if sahara.programmer and len(sahara.programmer) > 4 and sahara.programmer[:4] == b"\x7fELF":
++            sahara.bit64 = (sahara.programmer[4] == 2)
++        else:
++            sahara.bit64 = True
+ 
+     if mode=="Firehose":
+         cfg=qualcomm_firehose.cfg()

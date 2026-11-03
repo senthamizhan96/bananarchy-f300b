@@ -1,0 +1,4 @@
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="keypad", ENV{ID_INPUT_KEYBOARD}="1"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="gpio-keys", ENV{ID_INPUT_KEYBOARD}="1"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="pm8941_resin", ENV{ID_INPUT_KEYBOARD}="1"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="pm8xxx*vib*", SYMLINK+="input/by-path/platform-vibrator-event"
